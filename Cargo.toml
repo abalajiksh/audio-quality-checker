@@ -1,8 +1,7 @@
-// Cargo.toml
 [package]
 name = "audio-quality-checker"
 version = "0.1.0"
-edition = "2021"
+edition = "2025"
 
 [dependencies]
 symphonia = { version = "0.5", features = ["all"] }
