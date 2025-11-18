@@ -40,43 +40,31 @@ pub fn detect_quality_issues(
     // Analyze frequency spectrum
     let (cutoff, rolloff, has_artifacts) = analyze_frequency_spectrum(audio)?;
     
-    // Opus has specific cutoff frequencies based on bandwidth mode
+    let nyquist = audio.sample_rate as f32 / 2.0;
+    let cutoff_ratio = cutoff / nyquist;
+
+    if cutoff_ratio < 0.85 {  // Only flag if cutoff is below 85% of Nyquist
     if cutoff < 8500.0 && cutoff > 7500.0 {
-        // Opus wideband mode (WB) - 8 kHz cutoff
         defects.push(DefectType::OpusTranscode { 
             cutoff_hz: cutoff as u32,
             mode: "Wideband (8kHz)".to_string()
         });
     } else if cutoff < 12500.0 && cutoff > 11500.0 {
-        // Opus super-wideband mode (SWB) - 12 kHz cutoff
         defects.push(DefectType::OpusTranscode { 
             cutoff_hz: cutoff as u32,
             mode: "Super-wideband (12kHz)".to_string()
         });
-    } else if cutoff < 16500.0 && cutoff > 15000.0 {
-        // Could be MP3 or low-bitrate Opus
-        if detect_opus_artifacts(audio)? {
-            defects.push(DefectType::OpusTranscode { 
-                cutoff_hz: cutoff as u32,
-                mode: "Low bitrate".to_string()
-            });
-        } else if cutoff < 15500.0 {
+    } else if cutoff < 16500.0 && cutoff > 14500.0 {
+        // MP3 range
+        if cutoff < 15500.0 {
             defects.push(DefectType::Mp3Transcode { cutoff_hz: cutoff as u32 });
         } else if cutoff < 16000.0 {
             defects.push(DefectType::OggVorbisTranscode { cutoff_hz: cutoff as u32 });
         }
-    } else if cutoff < 18000.0 {
-        // AAC typically has higher cutoff but still below full spectrum
+    } else if cutoff < 18500.0 && cutoff > 16500.0 {
         defects.push(DefectType::AacTranscode { cutoff_hz: cutoff as u32 });
-    } else if cutoff < 20500.0 && cutoff > 19000.0 {
-        // Opus fullband mode (FB) - ~20 kHz cutoff
-        if detect_opus_artifacts(audio)? {
-            defects.push(DefectType::OpusTranscode { 
-                cutoff_hz: cutoff as u32,
-                mode: "Fullband (20kHz)".to_string()
-            });
-        }
     }
+}
 
     if has_artifacts {
         defects.push(DefectType::SpectralArtifacts);
@@ -165,18 +153,41 @@ fn analyze_frequency_spectrum(audio: &AudioData) -> Result<(f32, f32, bool)> {
 }
 
 fn find_frequency_cutoff(magnitudes: &[f32], sample_rate: u32) -> f32 {
-    let threshold = magnitudes.iter().cloned().fold(0.0f32, f32::max) * 0.01; // 1% of peak
+    // Use a more sophisticated approach: find where energy drops significantly
+    // Average the last 10% of spectrum to determine if there's real high-frequency content
     
-    // Search from high to low frequency
-    for i in (0..magnitudes.len()).rev() {
-        if magnitudes[i] > threshold {
-            let freq = i as f32 * sample_rate as f32 / (2.0 * magnitudes.len() as f32);
-            return freq;
+    let high_freq_start = (magnitudes.len() as f32 * 0.7) as usize;
+    let high_freq_avg: f32 = magnitudes[high_freq_start..]
+        .iter()
+        .sum::<f32>() / (magnitudes.len() - high_freq_start) as f32;
+    
+    let mid_freq_start = (magnitudes.len() as f32 * 0.3) as usize;
+    let mid_freq_end = (magnitudes.len() as f32 * 0.6) as usize;
+    let mid_freq_avg: f32 = magnitudes[mid_freq_start..mid_freq_end]
+        .iter()
+        .sum::<f32>() / (mid_freq_end - mid_freq_start) as f32;
+    
+    // If high frequencies have significantly less energy than mid frequencies, find cutoff
+    if mid_freq_avg > 0.0 && high_freq_avg / mid_freq_avg < 0.05 {
+        // Find where energy drops to 10% of peak (more reasonable threshold)
+        let peak = magnitudes.iter().cloned().fold(0.0f32, f32::max);
+        let threshold = peak * 0.1;
+        
+        // Search from 85% of Nyquist downward
+        let start_search = (magnitudes.len() as f32 * 0.85) as usize;
+        
+        for i in (0..start_search).rev() {
+            if magnitudes[i] > threshold {
+                let freq = i as f32 * sample_rate as f32 / (2.0 * magnitudes.len() as f32);
+                return freq;
+            }
         }
     }
     
+    // Return Nyquist if no significant cutoff detected
     sample_rate as f32 / 2.0
 }
+
 
 fn find_spectral_rolloff(magnitudes: &[f32], sample_rate: u32) -> f32 {
     let total_energy: f32 = magnitudes.iter().map(|m| m * m).sum();
@@ -194,54 +205,97 @@ fn find_spectral_rolloff(magnitudes: &[f32], sample_rate: u32) -> f32 {
 }
 
 fn detect_spectral_artifacts(magnitudes: &[f32]) -> bool {
-    // Look for sudden drops or "holes" in the spectrum
+    // Look for more significant anomalies
     let mut artifact_count = 0;
-    let window_size = 10;
+    let window_size = 20;  // Increased from 10
     
-    for i in window_size..magnitudes.len() - window_size {
+    // Only check middle to high frequencies (where artifacts are more visible)
+    let start_check = magnitudes.len() / 4;
+    let end_check = magnitudes.len() * 3 / 4;
+    
+    for i in (start_check + window_size)..(end_check - window_size) {
         let before: f32 = magnitudes[i - window_size..i].iter().sum::<f32>() / window_size as f32;
         let current = magnitudes[i];
         let after: f32 = magnitudes[i + 1..i + window_size + 1].iter().sum::<f32>() / window_size as f32;
         
         let avg = (before + after) / 2.0;
-        if avg > 0.0 && current < avg * 0.3 {
+        
+        // More strict threshold: 80% drop instead of 70%
+        if avg > 0.0 && current < avg * 0.2 {
             artifact_count += 1;
         }
     }
     
-    artifact_count > 5
+    // Require more artifacts to trigger (20 instead of 5)
+    artifact_count > 20
 }
+
 
 fn analyze_dynamic_range(audio: &AudioData) -> (f32, f32, f32) {
     let samples = &audio.samples;
     
-    // Find peak amplitude
-    let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-    let peak_db = if peak > 0.0 { 20.0 * peak.log10() } else { -120.0 };
+    // Find peak amplitude (RMS-based, more accurate than absolute peak)
+    let window_size = 2048;
+    let mut max_rms = 0.0f32;
     
-    // Estimate noise floor (average of lowest 5% of samples)
-    let mut sorted: Vec<f32> = samples.iter().map(|s| s.abs()).collect();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let noise_samples = &sorted[..sorted.len() / 20];
-    let noise_floor = noise_samples.iter().sum::<f32>() / noise_samples.len() as f32;
-    let noise_db = if noise_floor > 0.0 { 20.0 * noise_floor.log10() } else { -120.0 };
+    for chunk in samples.chunks(window_size) {
+        let rms: f32 = chunk.iter()
+            .map(|s| s * s)
+            .sum::<f32>() / chunk.len() as f32;
+        max_rms = max_rms.max(rms.sqrt());
+    }
     
-    let dynamic_range = peak_db - noise_db;
+    let peak_db = if max_rms > 0.0 { 20.0 * max_rms.log10() } else { -120.0 };
     
-    (dynamic_range, noise_db, peak_db)
+    // Estimate noise floor using histogram method (more reliable)
+    let mut amplitude_hist = vec![0u32; 1000];
+    let hist_max = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    
+    if hist_max > 0.0 {
+        for &sample in samples {
+            let normalized = (sample.abs() / hist_max * 999.0) as usize;
+            if normalized < 1000 {
+                amplitude_hist[normalized] += 1;
+            }
+        }
+        
+        // Find the lowest non-zero bin with significant content (>0.1% of samples)
+        let threshold_count = (samples.len() as f32 * 0.001) as u32;
+        let mut noise_bin = 0;
+        
+        for (i, &count) in amplitude_hist.iter().enumerate() {
+            if count > threshold_count && i > 0 {
+                noise_bin = i;
+                break;
+            }
+        }
+        
+        let noise_floor = (noise_bin as f32 / 1000.0) * hist_max;
+        let noise_db = if noise_floor > 0.0 { 20.0 * noise_floor.log10() } else { -120.0 };
+        
+        // Clamp to reasonable values
+        let dynamic_range = (peak_db - noise_db).max(0.0).min(160.0);
+        
+        (dynamic_range, noise_db, peak_db)
+    } else {
+        (0.0, -120.0, -120.0)
+    }
 }
 
 fn estimate_bit_depth(dynamic_range: f32) -> u32 {
-    // Theoretical: 16-bit = 96 dB, 24-bit = 144 dB
-    // Allow some tolerance
-    if dynamic_range > 120.0 {
-        24
-    } else if dynamic_range > 80.0 {
-        16
+    // More lenient thresholds accounting for real-world audio
+    // Real music rarely uses full theoretical dynamic range
+    if dynamic_range > 110.0 {
+        24  // Theoretical 24-bit is 144 dB, but real audio rarely exceeds 110-120 dB
+    } else if dynamic_range > 70.0 {
+        16  // Theoretical 16-bit is 96 dB, but 70-90 dB is typical for real music
+    } else if dynamic_range > 40.0 {
+        8   // 8-bit is 48 dB theoretical
     } else {
         8
     }
 }
+
 
 fn detect_upsampling(audio: &AudioData, cutoff_freq: f32) -> Option<u32> {
     let sample_rate = audio.sample_rate;

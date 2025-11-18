@@ -45,7 +45,10 @@ pub fn decode_audio(path: &Path) -> Result<AudioData> {
     let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
     
     // Extract bit depth from codec params
-    let bit_depth = track.codec_params.bits_per_sample.unwrap_or(16);
+    let bit_depth = track.codec_params.bits_per_sample.unwrap_or_else(|| {
+    // Fallback: try to infer from bits_per_coded_sample
+    track.codec_params.bits_per_coded_sample.unwrap_or(16)
+    });
 
     let dec_opts = DecoderOptions::default();
     let mut decoder = symphonia::default::get_codecs()
