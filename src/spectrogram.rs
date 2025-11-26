@@ -2,8 +2,7 @@
 
 use anyhow::Result;
 use image::{ImageBuffer, Rgb, RgbImage};
-use imageproc::drawing::{draw_text_mut, text_size};
-use imageproc::rect::Rect;
+use imageproc::drawing::{draw_text_mut};
 use rustfft::{FftPlanner, num_complex::Complex};
 use rusttype::{Font, Scale};
 use std::path::Path;
@@ -12,7 +11,8 @@ use crate::decoder::AudioData;
 pub fn generate_spectrogram_image(
     audio: &AudioData,
     output_path: &Path,
-    use_linear_scale: bool
+    use_linear_scale: bool,
+    full_length: bool
 ) -> Result<()> {
     let window_size = 2048;
     let hop_size = window_size / 4;
@@ -25,7 +25,13 @@ pub fn generate_spectrogram_image(
         .map(|chunk| chunk[0])
         .collect();
 
-    let num_frames = (mono.len() - window_size) / hop_size;
+    // Limit to first 15 seconds if not full_length
+    let max_duration_secs = if full_length { f32::MAX } else { 15.0 };
+    let max_samples = (audio.sample_rate as f32 * max_duration_secs) as usize;
+    let samples_to_process = mono.len().min(max_samples);
+    let mono_trimmed = &mono[..samples_to_process];
+
+    let num_frames = (mono_trimmed.len().saturating_sub(window_size)) / hop_size;
     let num_bins = window_size / 2;
     let mut spectrogram = vec![vec![0.0f32; num_frames]; num_bins];
 
@@ -33,11 +39,11 @@ pub fn generate_spectrogram_image(
     for frame_idx in 0..num_frames {
         let start = frame_idx * hop_size;
         let end = start + window_size;
-        if end > mono.len() {
+        if end > mono_trimmed.len() {
             break;
         }
 
-        let mut buffer: Vec<Complex<f32>> = mono[start..end]
+        let mut buffer: Vec<Complex<f32>> = mono_trimmed[start..end]
             .iter()
             .enumerate()
             .map(|(i, &sample)| {
@@ -54,7 +60,7 @@ pub fn generate_spectrogram_image(
         }
     }
 
-    let duration = mono.len() as f32 / audio.sample_rate as f32;
+    let duration = samples_to_process as f32 / audio.sample_rate as f32;
 
     if use_linear_scale {
         render_linear_spectrogram(&spectrogram, output_path, audio.sample_rate, duration)
@@ -70,7 +76,7 @@ fn render_mel_spectrogram(
     num_bins: usize,
     duration: f32
 ) -> Result<()> {
-    let num_mel_bins = 256;
+    let num_mel_bins = 300;
     let num_frames = spectrogram[0].len();
     
     let mel_filters = create_mel_filterbank(num_mel_bins, num_bins, sample_rate);
@@ -88,59 +94,93 @@ fn render_mel_spectrogram(
 
     let db_spec = normalize_to_db(&mel_spec);
 
-    // Image dimensions with margins
-    let margin_left = 80u32;
-    let margin_right = 100u32;
-    let margin_top = 60u32;
-    let margin_bottom = 60u32;
+    // High quality image dimensions
+    let margin_left = 100u32;
+    let margin_right = 120u32;
+    let margin_top = 80u32;
+    let margin_bottom = 80u32;
     
-    let spec_width = num_frames.max(800) as u32;
-    let spec_height = 400u32;
+    // Higher resolution for better quality
+    let spec_width = (num_frames * 2).max(1200) as u32;
+    let spec_height = 600u32;
     
     let img_width = margin_left + spec_width + margin_right;
     let img_height = margin_top + spec_height + margin_bottom;
     
     let mut img = ImageBuffer::from_pixel(img_width, img_height, Rgb([255u8, 255u8, 255u8]));
     
-    // Draw spectrogram
-    for frame_idx in 0..num_frames {
-        for mel_idx in 0..num_mel_bins {
-            let x = margin_left + (frame_idx as f32 / num_frames as f32 * spec_width as f32) as u32;
-            let y = margin_top + spec_height - 1 - (mel_idx as f32 / num_mel_bins as f32 * spec_height as f32) as u32;
+    // Draw spectrogram with interpolation for smoother appearance
+    for x in 0..spec_width {
+        for y in 0..spec_height {
+            let frame_f = (x as f32 / spec_width as f32) * num_frames as f32;
+            let mel_f = (1.0 - y as f32 / spec_height as f32) * num_mel_bins as f32;
             
-            if x < margin_left + spec_width && y >= margin_top && y < margin_top + spec_height {
+            // Bilinear interpolation for smoother image
+            let frame_idx = frame_f.floor() as usize;
+            let mel_idx = mel_f.floor() as usize;
+            
+            if frame_idx < num_frames - 1 && mel_idx < num_mel_bins - 1 {
+                let fx = frame_f - frame_idx as f32;
+                let fy = mel_f - mel_idx as f32;
+                
+                let v00 = db_spec[mel_idx][frame_idx];
+                let v10 = db_spec[mel_idx][frame_idx + 1];
+                let v01 = db_spec[mel_idx + 1][frame_idx];
+                let v11 = db_spec[mel_idx + 1][frame_idx + 1];
+                
+                let v0 = v00 * (1.0 - fx) + v10 * fx;
+                let v1 = v01 * (1.0 - fx) + v11 * fx;
+                let db_value = v0 * (1.0 - fy) + v1 * fy;
+                
+                let color = db_to_color(db_value);
+                img.put_pixel(margin_left + x, margin_top + y, Rgb([color.0, color.1, color.2]));
+            } else if frame_idx < num_frames && mel_idx < num_mel_bins {
                 let db_value = db_spec[mel_idx][frame_idx];
                 let color = db_to_color(db_value);
-                img.put_pixel(x, y, Rgb([color.0, color.1, color.2]));
+                img.put_pixel(margin_left + x, margin_top + y, Rgb([color.0, color.1, color.2]));
             }
         }
     }
     
+    // Load font
+    let font_data = include_bytes!("../fonts/DejaVuSans.ttf");
+    let font = Font::try_from_bytes(font_data as &[u8]).unwrap();
+    
     // Draw title
-    draw_simple_text(&mut img, margin_left + spec_width / 2 - 80, 20, "Mel Spectrogram", 24, Rgb([0, 0, 0]));
+    let title_scale = Scale::uniform(28.0);
+    draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+        (margin_left + spec_width / 2 - 100) as i32, 25, 
+        title_scale, &font, "Mel Spectrogram");
     
     // Draw axes
     draw_axes(&mut img, margin_left, margin_top, spec_width, spec_height);
     
     // Draw time labels (X-axis)
-    let num_time_labels = 5;
+    let num_time_labels = 6;
+    let time_scale = Scale::uniform(16.0);
     for i in 0..=num_time_labels {
         let x = margin_left + (i as f32 / num_time_labels as f32 * spec_width as f32) as u32;
         let time = i as f32 / num_time_labels as f32 * duration;
-        let label = format!("{:.0}", time);
-        draw_simple_text(&mut img, x.saturating_sub(10), margin_top + spec_height + 10, &label, 14, Rgb([0, 0, 0]));
+        let label = format!("{:.1}", time);
+        draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+            (x as i32).saturating_sub(15), (margin_top + spec_height + 15) as i32, 
+            time_scale, &font, &label);
         
         // Draw tick
-        for dy in 0..5 {
+        for dy in 0..8 {
             img.put_pixel(x, margin_top + spec_height + dy, Rgb([0, 0, 0]));
         }
     }
     
     // Draw "Time" label
-    draw_simple_text(&mut img, margin_left + spec_width / 2 - 20, margin_top + spec_height + 35, "Time", 16, Rgb([0, 0, 0]));
+    let axis_scale = Scale::uniform(20.0);
+    draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+        (margin_left + spec_width / 2 - 25) as i32, (margin_top + spec_height + 50) as i32, 
+        axis_scale, &font, "Time (s)");
     
-    // Draw frequency labels (Y-axis) - mel scale
-    let freq_markers = [128, 256, 512, 1024, 2048, 4096, 8192, 16384];
+    // Draw frequency labels (Y-axis)
+    let freq_scale = Scale::uniform(15.0);
+    let freq_markers = [100, 250, 500, 1000, 2000, 4000, 8000, 16000];
     let max_freq = (sample_rate / 2) as f32;
     
     for &freq in &freq_markers {
@@ -154,23 +194,30 @@ fn render_mel_spectrogram(
         
         if y >= margin_top && y < margin_top + spec_height {
             let label = if freq >= 1000 {
-                format!("{}", freq)
+                format!("{}k", freq / 1000)
             } else {
                 format!("{}", freq)
             };
-            draw_simple_text(&mut img, 10, y.saturating_sub(7), &label, 12, Rgb([0, 0, 0]));
+            draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+                15, (y as i32).saturating_sub(8), 
+                freq_scale, &font, &label);
             
             // Draw tick
-            for dx in 0..5 {
-                if margin_left >= dx {
+            for dx in 0..8 {
+                if margin_left > dx {
                     img.put_pixel(margin_left - dx, y, Rgb([0, 0, 0]));
                 }
             }
         }
     }
     
+    // Draw "Frequency" label (rotated effect using vertical text)
+    draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+        10, (margin_top + spec_height / 2 - 40) as i32, 
+        axis_scale, &font, "Hz");
+    
     // Draw dB color scale
-    draw_db_colorscale(&mut img, margin_left + spec_width + 20, margin_top, 30, spec_height);
+    draw_db_colorscale(&mut img, margin_left + spec_width + 25, margin_top, 40, spec_height, &font);
     
     img.save(output_path)?;
     Ok(())
@@ -187,51 +234,83 @@ fn render_linear_spectrogram(
     
     let db_spec = normalize_to_db(spectrogram);
     
-    let margin_left = 80u32;
-    let margin_right = 100u32;
-    let margin_top = 60u32;
-    let margin_bottom = 60u32;
+    let margin_left = 100u32;
+    let margin_right = 120u32;
+    let margin_top = 80u32;
+    let margin_bottom = 80u32;
     
-    let spec_width = num_frames.max(800) as u32;
-    let spec_height = 600u32;
+    let spec_width = (num_frames * 2).max(1200) as u32;
+    let spec_height = 800u32;
     
     let img_width = margin_left + spec_width + margin_right;
     let img_height = margin_top + spec_height + margin_bottom;
     
     let mut img = ImageBuffer::from_pixel(img_width, img_height, Rgb([255u8, 255u8, 255u8]));
     
-    // Draw spectrogram
-    for frame_idx in 0..num_frames {
-        for bin_idx in 0..num_bins {
-            let x = margin_left + (frame_idx as f32 / num_frames as f32 * spec_width as f32) as u32;
-            let y = margin_top + spec_height - 1 - (bin_idx as f32 / num_bins as f32 * spec_height as f32) as u32;
+    // Draw with interpolation
+    for x in 0..spec_width {
+        for y in 0..spec_height {
+            let frame_f = (x as f32 / spec_width as f32) * num_frames as f32;
+            let bin_f = (1.0 - y as f32 / spec_height as f32) * num_bins as f32;
             
-            if x < margin_left + spec_width && y >= margin_top && y < margin_top + spec_height {
+            let frame_idx = frame_f.floor() as usize;
+            let bin_idx = bin_f.floor() as usize;
+            
+            if frame_idx < num_frames - 1 && bin_idx < num_bins - 1 {
+                let fx = frame_f - frame_idx as f32;
+                let fy = bin_f - bin_idx as f32;
+                
+                let v00 = db_spec[bin_idx][frame_idx];
+                let v10 = db_spec[bin_idx][frame_idx + 1];
+                let v01 = db_spec[bin_idx + 1][frame_idx];
+                let v11 = db_spec[bin_idx + 1][frame_idx + 1];
+                
+                let v0 = v00 * (1.0 - fx) + v10 * fx;
+                let v1 = v01 * (1.0 - fx) + v11 * fx;
+                let db_value = v0 * (1.0 - fy) + v1 * fy;
+                
+                let color = db_to_color(db_value);
+                img.put_pixel(margin_left + x, margin_top + y, Rgb([color.0, color.1, color.2]));
+            } else if frame_idx < num_frames && bin_idx < num_bins {
                 let db_value = db_spec[bin_idx][frame_idx];
                 let color = db_to_color(db_value);
-                img.put_pixel(x, y, Rgb([color.0, color.1, color.2]));
+                img.put_pixel(margin_left + x, margin_top + y, Rgb([color.0, color.1, color.2]));
             }
         }
     }
     
-    draw_simple_text(&mut img, margin_left + spec_width / 2 - 100, 20, "Linear Spectrogram", 24, Rgb([0, 0, 0]));
+    let font_data = include_bytes!("../fonts/DejaVuSans.ttf");
+    let font = Font::try_from_bytes(font_data as &[u8]).unwrap();
+    
+    let title_scale = Scale::uniform(28.0);
+    draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+        (margin_left + spec_width / 2 - 120) as i32, 25, 
+        title_scale, &font, "Linear Spectrogram");
+    
     draw_axes(&mut img, margin_left, margin_top, spec_width, spec_height);
     
     // Time labels
-    let num_time_labels = 5;
+    let num_time_labels = 6;
+    let time_scale = Scale::uniform(16.0);
     for i in 0..=num_time_labels {
         let x = margin_left + (i as f32 / num_time_labels as f32 * spec_width as f32) as u32;
         let time = i as f32 / num_time_labels as f32 * duration;
-        draw_simple_text(&mut img, x.saturating_sub(10), margin_top + spec_height + 10, &format!("{:.0}", time), 14, Rgb([0, 0, 0]));
+        draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+            (x as i32).saturating_sub(15), (margin_top + spec_height + 15) as i32, 
+            time_scale, &font, &format!("{:.1}", time));
         
-        for dy in 0..5 {
+        for dy in 0..8 {
             img.put_pixel(x, margin_top + spec_height + dy, Rgb([0, 0, 0]));
         }
     }
     
-    draw_simple_text(&mut img, margin_left + spec_width / 2 - 20, margin_top + spec_height + 35, "Time", 16, Rgb([0, 0, 0]));
+    let axis_scale = Scale::uniform(20.0);
+    draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+        (margin_left + spec_width / 2 - 25) as i32, (margin_top + spec_height + 50) as i32, 
+        axis_scale, &font, "Time (s)");
     
-    // Frequency labels - linear scale
+    // Frequency labels
+    let freq_scale = Scale::uniform(15.0);
     let nyquist = sample_rate / 2;
     let freq_markers = [0, 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000, 18000, 20000, 22000];
     
@@ -248,17 +327,23 @@ fn render_linear_spectrogram(
             } else {
                 format!("{}", freq)
             };
-            draw_simple_text(&mut img, 10, y.saturating_sub(7), &label, 12, Rgb([0, 0, 0]));
+            draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+                15, (y as i32).saturating_sub(8), 
+                freq_scale, &font, &label);
             
-            for dx in 0..5 {
-                if margin_left >= dx {
+            for dx in 0..8 {
+                if margin_left > dx {
                     img.put_pixel(margin_left - dx, y, Rgb([0, 0, 0]));
                 }
             }
         }
     }
     
-    draw_db_colorscale(&mut img, margin_left + spec_width + 20, margin_top, 30, spec_height);
+    draw_text_mut(&mut img, Rgb([0, 0, 0]), 
+        10, (margin_top + spec_height / 2 - 40) as i32, 
+        axis_scale, &font, "Hz");
+    
+    draw_db_colorscale(&mut img, margin_left + spec_width + 25, margin_top, 40, spec_height, &font);
     
     img.save(output_path)?;
     Ok(())
@@ -287,33 +372,32 @@ fn normalize_to_db(spec: &[Vec<f32>]) -> Vec<Vec<f32>> {
 }
 
 fn db_to_color(db: f32) -> (u8, u8, u8) {
-    // Map dB range [-80, 0] to color
     let normalized = ((db + 80.0) / 80.0).clamp(0.0, 1.0);
     
-    // Viridis-like colormap (purple -> blue -> green -> yellow)
+    // Viridis colormap for better visibility
     if normalized < 0.25 {
         let t = normalized / 0.25;
-        let r = (68.0 * t) as u8;
-        let g = (1.0 + 27.0 * t) as u8;
-        let b = (84.0 + 51.0 * t) as u8;
+        let r = (68.0 + t * 12.0) as u8;
+        let g = (1.0 + t * 38.0) as u8;
+        let b = (84.0 + t * 56.0) as u8;
         (r, g, b)
     } else if normalized < 0.5 {
         let t = (normalized - 0.25) / 0.25;
-        let r = (68.0 - 25.0 * t) as u8;
-        let g = (28.0 + 111.0 * t) as u8;
-        let b = (135.0 + 5.0 * t) as u8;
+        let r = (80.0 - t * 38.0) as u8;
+        let g = (39.0 + t * 107.0) as u8;
+        let b = (140.0 - t * 8.0) as u8;
         (r, g, b)
     } else if normalized < 0.75 {
         let t = (normalized - 0.5) / 0.25;
-        let r = (43.0 + 75.0 * t) as u8;
-        let g = (139.0 + 50.0 * t) as u8;
-        let b = (140.0 - 76.0 * t) as u8;
+        let r = (42.0 + t * 81.0) as u8;
+        let g = (146.0 + t * 52.0) as u8;
+        let b = (132.0 - t * 69.0) as u8;
         (r, g, b)
     } else {
         let t = (normalized - 0.75) / 0.25;
-        let r = (118.0 + 135.0 * t) as u8;
-        let g = (189.0 + 34.0 * t) as u8;
-        let b = (64.0 - 27.0 * t) as u8;
+        let r = (123.0 + t * 130.0) as u8;
+        let g = (198.0 + t * 27.0) as u8;
+        let b = (63.0 - t * 18.0) as u8;
         (r, g, b)
     }
 }
@@ -321,18 +405,25 @@ fn db_to_color(db: f32) -> (u8, u8, u8) {
 fn draw_axes(img: &mut RgbImage, x: u32, y: u32, width: u32, height: u32) {
     let black = Rgb([0u8, 0u8, 0u8]);
     
-    // Left axis
-    for dy in 0..=height {
-        img.put_pixel(x, y + dy, black);
-    }
-    
-    // Bottom axis
-    for dx in 0..=width {
-        img.put_pixel(x + dx, y + height, black);
+    // Draw thicker axes for better visibility
+    for thickness in 0..2 {
+        // Left axis
+        for dy in 0..=height {
+            if x + thickness < img.width() {
+                img.put_pixel(x + thickness, y + dy, black);
+            }
+        }
+        
+        // Bottom axis
+        for dx in 0..=width {
+            if y + height + thickness < img.height() {
+                img.put_pixel(x + dx, y + height + thickness, black);
+            }
+        }
     }
 }
 
-fn draw_db_colorscale(img: &mut RgbImage, x: u32, y: u32, width: u32, height: u32) {
+fn draw_db_colorscale(img: &mut RgbImage, x: u32, y: u32, width: u32, height: u32, font: &Font) {
     // Draw color gradient
     for i in 0..height {
         let db = -80.0 + (80.0 * i as f32 / height as f32);
@@ -354,13 +445,16 @@ fn draw_db_colorscale(img: &mut RgbImage, x: u32, y: u32, width: u32, height: u3
     }
     
     // Draw dB labels
+    let label_scale = Scale::uniform(16.0);
     let db_labels = [0, -20, -40, -60, -80];
     for &db in &db_labels {
         let label_y = y + height - ((db + 80) as f32 / 80.0 * height as f32) as u32;
-        draw_simple_text(img, x + width + 5, label_y.saturating_sub(7), &format!("{}", db), 12, Rgb([0, 0, 0]));
+        draw_text_mut(img, Rgb([0, 0, 0]), 
+            (x + width + 8) as i32, (label_y as i32).saturating_sub(8), 
+            label_scale, font, &format!("{}", db));
         
         // Draw tick
-        for dx in 0..5 {
+        for dx in 0..6 {
             if label_y < img.height() {
                 img.put_pixel(x + width + dx, label_y, black);
             }
@@ -368,26 +462,10 @@ fn draw_db_colorscale(img: &mut RgbImage, x: u32, y: u32, width: u32, height: u3
     }
     
     // Draw "dB" label
-    draw_simple_text(img, x + width + 5, y.saturating_sub(20), "dB", 12, Rgb([0, 0, 0]));
-}
-
-fn draw_simple_text(img: &mut RgbImage, x: u32, y: u32, text: &str, size: u32, color: Rgb<u8>) {
-    // Simple bitmap-based text rendering
-    let font_data = include_bytes!("../fonts/DejaVuSans.ttf");
-    let font = Font::try_from_bytes(font_data as &[u8]);
-    
-    if let Some(font) = font {
-        let scale = Scale::uniform(size as f32);
-        draw_text_mut(img, color, x as i32, y as i32, scale, &font, text);
-    } else {
-        // Fallback: draw placeholder
-        for (i, _) in text.chars().enumerate() {
-            let px = x + i as u32 * (size / 2);
-            if px < img.width() && y < img.height() {
-                img.put_pixel(px, y, color);
-            }
-        }
-    }
+    let db_label_scale = Scale::uniform(18.0);
+    draw_text_mut(img, Rgb([0, 0, 0]), 
+        (x + width + 8) as i32, y.saturating_sub(25) as i32, 
+        db_label_scale, font, "dB");
 }
 
 fn create_mel_filterbank(num_mel_bins: usize, num_fft_bins: usize, sample_rate: u32) -> Vec<Vec<f32>> {

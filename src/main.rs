@@ -34,6 +34,10 @@ struct Args {
     #[arg(long)]
     linear_scale: bool,
 
+    /// Generate full-length spectrogram instead of first 15 seconds
+    #[arg(long)]
+    full_spectrogram: bool,
+
     /// Output mode: "source" (same as audio file), "current" (current directory), or custom path
     #[arg(short, long, default_value = "source")]
     output: String,
@@ -135,7 +139,7 @@ fn process_file(file_path: &Path, args: &Args) -> Result<()> {
             }
         };
 
-        analyzer.generate_spectrogram(&output_path, args.linear_scale)?;
+        analyzer.generate_spectrogram(&output_path, args.linear_scale, args.full_spectrogram)?;
         println!("  Spectrogram saved to: {}", output_path.display());
     }
 
