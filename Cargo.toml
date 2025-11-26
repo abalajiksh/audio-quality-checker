@@ -1,5 +1,5 @@
 [package]
-name = "audio-quality-checker"
+name = "audiocheckr"
 version = "0.1.0"
 edition = "2024"
 
