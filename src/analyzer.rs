@@ -1,4 +1,5 @@
 // src/analyzer.rs
+
 use anyhow::Result;
 use std::path::Path;
 use crate::decoder::{decode_audio, AudioData};
@@ -19,10 +20,8 @@ impl AudioAnalyzer {
         detect_quality_issues(&self.audio_data, expected_bit_depth, check_upsampling)
     }
 
-    // Update the generate_spectrogram method signature:
     pub fn generate_spectrogram(&self, output_path: &Path, use_linear_scale: bool) -> Result<()> {
-        spectrogram::generate_spectrogram_image(&self.audio_data, output_path, use_linear_scale)
-    }
-
+        generate_spectrogram_image(&self.audio_data, output_path, use_linear_scale)
     }
 }
+
