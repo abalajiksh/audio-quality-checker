@@ -21,11 +21,17 @@ struct TestResult {
 #[test]
 fn test_all_audio_files() {
     let binary_path = get_binary_path();
-    let test_base = PathBuf::from("../TestFiles");
     
-    if !test_base.exists() {
-        panic!("TestFiles directory not found. Expected at: {:?}", test_base.canonicalize());
-    }
+    // Get project root (where Cargo.toml is)
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let test_base = project_root.join("TestFiles");
+    
+    assert!(
+        test_base.exists(),
+        "TestFiles directory not found at: {}\nProject root: {}",
+        test_base.display(),
+        project_root.display()
+    );
 
     let test_cases = define_test_cases(&test_base);
     let mut results = Vec::new();

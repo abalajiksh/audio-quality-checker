@@ -3,6 +3,7 @@ use rustfft::{FftPlanner, num_complex::Complex};
 use crate::decoder::AudioData;
 use std::collections::{HashMap, HashSet};
 
+
 #[derive(Debug)]
 pub enum DefectType {
     Mp3Transcode { cutoff_hz: u32 },
@@ -12,8 +13,10 @@ pub enum DefectType {
     BitDepthMismatch { claimed: u32, actual: u32 },
     Upsampled { from: u32, to: u32 },
     SpectralArtifacts,
+    #[allow(dead_code)]
     LowQuality,
 }
+
 
 #[derive(Debug)]
 pub struct QualityReport {
@@ -29,6 +32,7 @@ pub struct QualityReport {
     pub spectral_rolloff: f32,
     pub defects: Vec<DefectType>,
 }
+
 
 pub fn detect_quality_issues(
     audio: &AudioData,
@@ -46,36 +50,39 @@ pub fn detect_quality_issues(
     
     // Only flag if cutoff is significantly below expected (< 80% of Nyquist)
     if cutoff_ratio < 0.80 {
+        // For 96kHz files, MP3 cutoff will be around 16-20kHz (out of 48kHz Nyquist)
+        // So cutoff_ratio will be 16000/48000 = 0.33 to 0.42
+        
         if cutoff >= 7500.0 && cutoff <= 8500.0 {
-            defects.push(DefectType::OpusTranscode { 
+            defects.push(DefectType::OpusTranscode {
                 cutoff_hz: cutoff as u32,
                 mode: "Wideband (8kHz)".to_string()
             });
         } else if cutoff >= 11500.0 && cutoff <= 12500.0 {
-            defects.push(DefectType::OpusTranscode { 
+            defects.push(DefectType::OpusTranscode {
                 cutoff_hz: cutoff as u32,
                 mode: "Super-wideband (12kHz)".to_string()
             });
-        } else if cutoff >= 14500.0 && cutoff <= 16500.0 {
-            if cutoff < 15500.0 {
+        } else if cutoff >= 14500.0 && cutoff <= 20500.0 {
+            // Expanded range to catch more MP3/Vorbis transcodes
+            if cutoff < 16500.0 {
                 defects.push(DefectType::Mp3Transcode { cutoff_hz: cutoff as u32 });
-            } else {
+            } else if cutoff < 18000.0 {
                 defects.push(DefectType::OggVorbisTranscode { cutoff_hz: cutoff as u32 });
-            }
-        } else if cutoff >= 16500.0 && cutoff <= 18500.0 {
-            defects.push(DefectType::AacTranscode { cutoff_hz: cutoff as u32 });
-        } else if cutoff >= 19000.0 && cutoff <= 20500.0 {
-            if has_artifacts {
-                defects.push(DefectType::OpusTranscode { 
-                    cutoff_hz: cutoff as u32,
-                    mode: "Fullband (20kHz)".to_string()
-                });
+            } else if cutoff < 19500.0 {
+                defects.push(DefectType::AacTranscode { cutoff_hz: cutoff as u32 });
+            } else {
+                // 19.5-20.5 kHz could be high bitrate MP3 or AAC
+                defects.push(DefectType::Mp3Transcode { cutoff_hz: cutoff as u32 });
             }
         }
-    }
-
-    // Only flag artifacts if we also have a suspicious cutoff
-    if has_artifacts && cutoff_ratio < 0.90 {
+        
+        // Add spectral artifacts if detected in low cutoff scenarios
+        if has_artifacts {
+            defects.push(DefectType::SpectralArtifacts);
+        }
+    } else if cutoff_ratio >= 0.80 && cutoff_ratio < 0.95 && has_artifacts {
+        // High cutoff but with artifacts - likely high bitrate lossy
         defects.push(DefectType::SpectralArtifacts);
     }
 
@@ -84,7 +91,7 @@ pub fn detect_quality_issues(
     let (dynamic_range, noise_floor, peak_amp) = calculate_simple_dynamic_range(audio);
 
     // Flag bit depth mismatch if significant (8-bit difference minimum)
-    if actual_bit_depth < audio.bit_depth && (audio.bit_depth - actual_bit_depth) >= 8 {
+    if actual_bit_depth <= 16 && audio.bit_depth >= 24 && (audio.bit_depth - actual_bit_depth) >= 8 {
         defects.push(DefectType::BitDepthMismatch {
             claimed: audio.bit_depth,
             actual: actual_bit_depth,
@@ -116,6 +123,7 @@ pub fn detect_quality_issues(
     })
 }
 
+
 fn detect_actual_bit_depth(audio: &AudioData) -> u32 {
     let samples = &audio.samples;
     
@@ -133,6 +141,7 @@ fn detect_actual_bit_depth(audio: &AudioData) -> u32 {
     estimates.sort();
     estimates[1]  // Return median
 }
+
 
 fn analyze_lsb_precision(samples: &[f32]) -> u32 {
     // Analyze least significant bit patterns to determine actual precision
@@ -183,6 +192,7 @@ fn analyze_lsb_precision(samples: &[f32]) -> u32 {
         8
     }
 }
+
 
 fn analyze_quantization_noise(audio: &AudioData) -> u32 {
     let samples = &audio.samples;
@@ -244,6 +254,7 @@ fn analyze_quantization_noise(audio: &AudioData) -> u32 {
     }
 }
 
+
 fn analyze_value_distribution(samples: &[f32]) -> u32 {
     let test_size = samples.len().min(100000);
     
@@ -272,6 +283,7 @@ fn analyze_value_distribution(samples: &[f32]) -> u32 {
     }
 }
 
+
 fn calculate_simple_dynamic_range(audio: &AudioData) -> (f32, f32, f32) {
     let samples = &audio.samples;
     
@@ -289,6 +301,7 @@ fn calculate_simple_dynamic_range(audio: &AudioData) -> (f32, f32, f32) {
     
     (dynamic_range, rms_db, peak_db)
 }
+
 
 fn analyze_frequency_spectrum(audio: &AudioData) -> Result<(f32, f32, bool)> {
     let fft_size = 8192;
@@ -331,6 +344,7 @@ fn analyze_frequency_spectrum(audio: &AudioData) -> Result<(f32, f32, bool)> {
     Ok((cutoff, rolloff, has_artifacts))
 }
 
+
 fn find_frequency_cutoff(magnitudes: &[f32], sample_rate: u32) -> f32 {
     if magnitudes.is_empty() {
         return sample_rate as f32 / 2.0;
@@ -355,6 +369,7 @@ fn find_frequency_cutoff(magnitudes: &[f32], sample_rate: u32) -> f32 {
     sample_rate as f32 / 2.0
 }
 
+
 fn find_spectral_rolloff(magnitudes: &[f32], sample_rate: u32) -> f32 {
     let total_energy: f32 = magnitudes.iter().map(|m| m * m).sum();
     
@@ -374,6 +389,7 @@ fn find_spectral_rolloff(magnitudes: &[f32], sample_rate: u32) -> f32 {
     
     sample_rate as f32 / 2.0
 }
+
 
 fn detect_spectral_artifacts(magnitudes: &[f32]) -> bool {
     if magnitudes.len() < 100 {
@@ -401,6 +417,7 @@ fn detect_spectral_artifacts(magnitudes: &[f32]) -> bool {
     artifact_score > 50
 }
 
+
 fn detect_upsampling(audio: &AudioData, cutoff_freq: f32, _cutoff_ratio: f32) -> Option<u32> {
     let sample_rate = audio.sample_rate;
     
@@ -411,6 +428,7 @@ fn detect_upsampling(audio: &AudioData, cutoff_freq: f32, _cutoff_ratio: f32) ->
         (44100, 192000),
         (48000, 96000),
         (48000, 192000),
+        (96000, 176400),
         (96000, 192000),
     ];
     
@@ -419,7 +437,8 @@ fn detect_upsampling(audio: &AudioData, cutoff_freq: f32, _cutoff_ratio: f32) ->
             let original_nyquist = original as f32 / 2.0;
             let diff_ratio = (cutoff_freq - original_nyquist).abs() / original_nyquist;
             
-            if diff_ratio < 0.05 {
+            // More lenient threshold for upsampling detection
+            if diff_ratio < 0.10 {
                 return Some(original);
             }
         }

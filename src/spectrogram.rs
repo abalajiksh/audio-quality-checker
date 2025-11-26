@@ -478,7 +478,7 @@ fn create_mel_filterbank(num_mel_bins: usize, num_fft_bins: usize, sample_rate: 
     
     let hz_points: Vec<f32> = mel_points.iter().map(|&m| mel_to_hz(m)).collect();
     let bin_points: Vec<f32> = hz_points.iter()
-        .map(|&f| (num_fft_bins as f32 * f / (sample_rate as f32 / 2.0)))
+        .map(|&f| num_fft_bins as f32 * f / (sample_rate as f32 / 2.0))
         .collect();
     
     let mut filters = vec![vec![0.0; num_fft_bins]; num_mel_bins];
