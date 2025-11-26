@@ -49,6 +49,11 @@ struct Args {
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
+
+    // output json for programmatic use
+    #[arg(long)]
+    json: bool,
+
 }
 
 fn main() -> Result<()> {

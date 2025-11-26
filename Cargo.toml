@@ -16,3 +16,7 @@ colorful = "0.2"
 
 [dependencies.spectrum-analyzer]
 version = "1.5"
+
+[[test]]
+name = "integration_test"
+path = "tests/integration_test.rs"

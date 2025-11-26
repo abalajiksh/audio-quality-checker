@@ -1,4 +1,23 @@
-/target
+# Test data (private, 8+ GB)
+TestFiles/
+
+# Build artifacts
+/target/
 Cargo.lock
-spectrograms/
-*.png
+
+# Spectrogram outputs
+*_spectrogram.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary test outputs
+/test_output/
