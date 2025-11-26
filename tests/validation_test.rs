@@ -324,7 +324,7 @@ fn test_help_output() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("audio-quality-checker"));
+    assert!(stdout.contains("audiocheckr"));
     assert!(stdout.contains("--input"));
     assert!(stdout.contains("--bit-depth"));
 }
