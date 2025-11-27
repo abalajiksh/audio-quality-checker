@@ -273,3 +273,4 @@ fn test_help_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("audiocheckr"));
 }
+//colinsucks
