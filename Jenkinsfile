@@ -23,34 +23,32 @@ pipeline {
     
     stages {
         stage('Setup Tools') {
-    steps {
-        sh '''
-            # Create user bin directory if it doesn't exist
-            mkdir -p $HOME/bin
-            
-            # Install MinIO client if not present
-            if ! command -v mc &> /dev/null; then
-                echo "Installing MinIO client..."
-                wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O $HOME/bin/mc
-                chmod +x $HOME/bin/mc
-            fi
-            
-            # Install Rust if not present
-            if ! command -v cargo &> /dev/null; then
-                echo "Installing Rust..."
-                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-                # Use dot (.) instead of source for POSIX compatibility
-                . $HOME/.cargo/env
-            fi
-            
-            # Verify installations
-            mc --version
-            cargo --version
-            rustc --version
-        '''
-        }
-    }
-
+            steps {
+                sh '''
+                    # Create user bin directory if it doesn't exist
+                    mkdir -p $HOME/bin
+                    
+                    # Install MinIO client if not present
+                    if ! command -v mc &> /dev/null; then
+                        echo "Installing MinIO client..."
+                        wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O $HOME/bin/mc
+                        chmod +x $HOME/bin/mc
+                    fi
+                    
+                    # Install Rust if not present
+                    if ! command -v cargo &> /dev/null; then
+                        echo "Installing Rust..."
+                        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+                        # Use dot (.) instead of source for POSIX compatibility
+                        . $HOME/.cargo/env
+                    fi
+                    
+                    # Verify installations
+                    mc --version
+                    cargo --version
+                    rustc --version
+                '''
+            }
         }
         
         stage('Checkout') {
