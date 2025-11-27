@@ -1,6 +1,5 @@
 # Test data (private, 8+ GB)
 TestFiles/
-TestFiles.zip
 
 # Build artifacts
 /target/

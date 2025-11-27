@@ -11,14 +11,13 @@
 // - Upscaled: Lossy → Lossless = FAIL
 // - MasterScript: Complex transcoding chains - most should FAIL
 
-use std::env;
 use std::process::Command;
 use std::path::{Path, PathBuf};
 
 struct TestCase {
     file_path: String,
     should_pass: bool,
-    expected_defects: Vec<String>,
+    category: String,
     description: String,
 }
 
@@ -54,17 +53,26 @@ fn test_regression_suite() {
     let mut failed = 0;
     let mut false_positives = 0;
     let mut false_negatives = 0;
+    let mut category_results: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
 
     println!("Running {} regression tests...\n", test_cases.len());
 
     for (idx, test_case) in test_cases.iter().enumerate() {
+        // Skip if file doesn't exist (some MasterScript files may not be generated)
+        if !Path::new(&test_case.file_path).exists() {
+            println!("[{:3}/{}] SKIP: {} (file not found)", idx + 1, test_cases.len(), test_case.description);
+            continue;
+        }
+
         let result = run_test(&binary_path, test_case);
+        let entry = category_results.entry(test_case.category.clone()).or_insert((0, 0));
 
         if result.passed == result.expected {
             passed += 1;
             println!("[{:2}/{}] ✓ PASS: {}", idx + 1, test_cases.len(), test_case.description);
         } else {
             failed += 1;
+            entry.1 += 1;
 
             if result.passed && !result.expected {
                 false_negatives += 1;
@@ -112,15 +120,13 @@ fn get_binary_path() -> PathBuf {
         let debug_path_exe = debug_path.with_extension("exe");
 
         if release_path_exe.exists() {
-            println!("Using Windows release binary");
             return release_path_exe;
         } else if debug_path_exe.exists() {
-            println!("Using Windows debug binary");
             return debug_path_exe;
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     {
         if release_path.exists() {
             return release_path;
@@ -545,22 +551,27 @@ fn run_test(binary: &Path, test_case: &TestCase) -> TestResult {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let has_issues = stdout.contains("✗ ISSUES DETECTED") || stdout.contains("ISSUES DETECTED");
-    let is_clean = stdout.contains("✓ CLEAN") || (stdout.contains("CLEAN") && !has_issues);
+    // Parse output
+    let has_issues = stdout.contains("ISSUES DETECTED") || stdout.contains("✗");
+    let is_clean = stdout.contains("CLEAN") && !has_issues;
+    let is_lossless = stdout.contains("likely lossless");
+
+    // Extract quality score
+    let quality_score = extract_quality_score(&stdout);
 
     let mut defects_found = Vec::new();
 
     if stdout.contains("MP3") || stdout.contains("Mp3") {
-        defects_found.push("Mp3Transcode".to_string());
+        defects_found.push("Mp3".to_string());
     }
     if stdout.contains("AAC") || stdout.contains("Aac") {
-        defects_found.push("AacTranscode".to_string());
+        defects_found.push("AAC".to_string());
     }
     if stdout.contains("Opus") {
-        defects_found.push("OpusTranscode".to_string());
+        defects_found.push("Opus".to_string());
     }
     if stdout.contains("Vorbis") || stdout.contains("Ogg") {
-        defects_found.push("OggVorbisTranscode".to_string());
+        defects_found.push("Vorbis".to_string());
     }
     if stdout.contains("Bit depth mismatch") || stdout.contains("BitDepth") || stdout.contains("bit depth") {
         defects_found.push("BitDepthMismatch".to_string());
@@ -568,15 +579,15 @@ fn run_test(binary: &Path, test_case: &TestCase) -> TestResult {
     if stdout.contains("Upsampled") || stdout.contains("upsampled") || stdout.contains("interpolat") {
         defects_found.push("Upsampled".to_string());
     }
-    if stdout.contains("Spectral artifacts") {
-        defects_found.push("SpectralArtifacts".to_string());
+    if stdout.contains("Spectral") {
+        defects_found.push("Spectral".to_string());
     }
 
     TestResult {
-        passed: is_clean,
+        passed: is_clean || is_lossless,
         expected: test_case.should_pass,
         defects_found,
-        file: test_case.file_path.clone(),
+        quality_score,
     }
 }
 
@@ -587,7 +598,7 @@ fn test_binary_exists() {
 }
 
 #[test]
-fn test_help_output() {
+fn test_binary_exists() {
     let binary_path = get_binary_path();
     let output = Command::new(&binary_path)
         .arg("--help")

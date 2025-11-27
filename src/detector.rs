@@ -1,448 +1,574 @@
+// src/detector.rs
+//
+// Main detection logic combining all analysis modules.
+// Produces comprehensive quality reports with confidence scores.
+
 use anyhow::Result;
-use rustfft::{FftPlanner, num_complex::Complex};
 use crate::decoder::AudioData;
-use std::collections::{HashMap, HashSet};
+use crate::spectral::{SpectralAnalyzer, SpectralAnalysis, match_signature};
+use crate::bit_depth::{analyze_bit_depth, BitDepthAnalysis};
+use crate::stereo::{analyze_stereo, StereoAnalysis};
+use crate::transients::{analyze_pre_echo, analyze_frame_boundaries, PreEchoAnalysis, FrameBoundaryAnalysis};
+use crate::phase::{analyze_phase, PhaseAnalysis};
+use crate::upsampling::{analyze_upsampling, UpsamplingAnalysis};
+use crate::true_peak::{analyze_true_peak, TruePeakAnalysis};
+use crate::mfcc::{analyze_mfcc, MfccAnalysis};
 
-
-#[derive(Debug)]
+/// Defect types that can be detected
+#[derive(Debug, Clone)]
 pub enum DefectType {
-    Mp3Transcode { cutoff_hz: u32 },
-    OggVorbisTranscode { cutoff_hz: u32 },
-    AacTranscode { cutoff_hz: u32 },
-    OpusTranscode { cutoff_hz: u32, mode: String },
-    BitDepthMismatch { claimed: u32, actual: u32 },
-    Upsampled { from: u32, to: u32 },
-    SpectralArtifacts,
-    #[allow(dead_code)]
-    LowQuality,
+    /// MP3 transcode detected
+    Mp3Transcode { 
+        cutoff_hz: u32,
+        estimated_bitrate: Option<u32>,
+    },
+    /// Ogg Vorbis transcode detected
+    OggVorbisTranscode { 
+        cutoff_hz: u32,
+        estimated_quality: Option<u32>,
+    },
+    /// AAC transcode detected  
+    AacTranscode { 
+        cutoff_hz: u32,
+        estimated_bitrate: Option<u32>,
+    },
+    /// Opus transcode detected
+    OpusTranscode { 
+        cutoff_hz: u32, 
+        mode: String,
+    },
+    /// Bit depth mismatch (e.g., 16-bit labeled as 24-bit)
+    BitDepthMismatch { 
+        claimed: u32, 
+        actual: u32,
+        confidence: f32,
+    },
+    /// Upsampled from lower sample rate
+    Upsampled { 
+        from: u32, 
+        to: u32,
+        confidence: f32,
+    },
+    /// Spectral artifacts detected
+    SpectralArtifacts {
+        artifact_score: f32,
+    },
+    /// Joint stereo encoding detected
+    JointStereo {
+        confidence: f32,
+    },
+    /// Pre-echo artifacts (characteristic of transform codecs)
+    PreEcho {
+        score: f32,
+    },
+    /// Phase discontinuities detected
+    PhaseDiscontinuities {
+        score: f32,
+    },
+    /// Clipping detected
+    Clipping {
+        percentage: f32,
+    },
+    /// Inter-sample overs (true peak > 0 dBFS)
+    InterSampleOvers {
+        count: usize,
+        max_level_db: f32,
+    },
+    /// Low quality encoding
+    LowQuality {
+        description: String,
+    },
 }
 
+/// Defect with confidence score
+#[derive(Debug, Clone)]
+pub struct DetectedDefect {
+    pub defect_type: DefectType,
+    pub confidence: f32,
+    pub evidence: Vec<String>,
+}
 
+/// Comprehensive quality report
 #[derive(Debug)]
 pub struct QualityReport {
+    // Basic file info
     pub sample_rate: u32,
     pub channels: usize,
     pub claimed_bit_depth: u32,
     pub actual_bit_depth: u32,
     pub duration_secs: f64,
+    pub codec_name: String,
+    
+    // Spectral analysis
     pub frequency_cutoff: f32,
+    pub spectral_rolloff: f32,
+    pub rolloff_steepness: f32,
+    pub has_brick_wall: bool,
+    pub spectral_flatness: f32,
+    
+    // Dynamic analysis
     pub dynamic_range: f32,
     pub noise_floor: f32,
     pub peak_amplitude: f32,
-    pub spectral_rolloff: f32,
-    pub defects: Vec<DefectType>,
+    pub true_peak: f32,
+    pub crest_factor: f32,
+    
+    // Stereo analysis (if applicable)
+    pub stereo_width: Option<f32>,
+    pub channel_correlation: Option<f32>,
+    
+    // Detected defects
+    pub defects: Vec<DetectedDefect>,
+    
+    // Overall assessment
+    pub quality_score: f32,  // 0.0 = definitely transcoded, 1.0 = likely lossless
+    pub is_likely_lossless: bool,
+    
+    // Detailed analysis results (for verbose output)
+    pub spectral_analysis: SpectralAnalysis,
+    pub bit_depth_analysis: BitDepthAnalysis,
+    pub stereo_analysis: Option<StereoAnalysis>,
+    pub pre_echo_analysis: PreEchoAnalysis,
+    pub phase_analysis: PhaseAnalysis,
+    pub upsampling_analysis: UpsamplingAnalysis,
+    pub true_peak_analysis: TruePeakAnalysis,
 }
 
+/// Detection configuration options
+#[derive(Debug, Clone)]
+pub struct DetectionConfig {
+    /// Expected bit depth (for comparison)
+    pub expected_bit_depth: u32,
+    /// Check for upsampling
+    pub check_upsampling: bool,
+    /// Analyze stereo field
+    pub check_stereo: bool,
+    /// Analyze transients/pre-echo
+    pub check_transients: bool,
+    /// Analyze phase
+    pub check_phase: bool,
+    /// Run MFCC analysis
+    pub check_mfcc: bool,
+    /// Minimum confidence to report a defect
+    pub min_confidence: f32,
+}
 
+impl Default for DetectionConfig {
+    fn default() -> Self {
+        DetectionConfig {
+            expected_bit_depth: 24,
+            check_upsampling: true,
+            check_stereo: true,
+            check_transients: true,
+            check_phase: false,  // Slower, disabled by default
+            check_mfcc: false,   // Experimental, disabled by default
+            min_confidence: 0.5,
+        }
+    }
+}
+
+/// Perform comprehensive quality analysis
 pub fn detect_quality_issues(
     audio: &AudioData,
-    _expected_bit_depth: u32,
-    check_upsampling: bool,
+    config: &DetectionConfig,
 ) -> Result<QualityReport> {
     let mut defects = Vec::new();
-
-    // Analyze frequency spectrum
-    let (cutoff, rolloff, has_artifacts) = analyze_frequency_spectrum(audio)?;
     
-    // Detect transcodes
-    let nyquist = audio.sample_rate as f32 / 2.0;
-    let cutoff_ratio = cutoff / nyquist;
+    // ===== Spectral Analysis =====
+    let mut spectral_analyzer = SpectralAnalyzer::new(8192, 2048, audio.sample_rate);
+    let spectral_analysis = spectral_analyzer.analyze(audio)?;
     
-    // Only flag if cutoff is significantly below expected (< 80% of Nyquist)
-    if cutoff_ratio < 0.80 {
-        // For 96kHz files, MP3 cutoff will be around 16-20kHz (out of 48kHz Nyquist)
-        // So cutoff_ratio will be 16000/48000 = 0.33 to 0.42
-        
-        if cutoff >= 7500.0 && cutoff <= 8500.0 {
-            defects.push(DefectType::OpusTranscode {
-                cutoff_hz: cutoff as u32,
-                mode: "Wideband (8kHz)".to_string()
-            });
-        } else if cutoff >= 11500.0 && cutoff <= 12500.0 {
-            defects.push(DefectType::OpusTranscode {
-                cutoff_hz: cutoff as u32,
-                mode: "Super-wideband (12kHz)".to_string()
-            });
-        } else if cutoff >= 14500.0 && cutoff <= 20500.0 {
-            // Expanded range to catch more MP3/Vorbis transcodes
-            if cutoff < 16500.0 {
-                defects.push(DefectType::Mp3Transcode { cutoff_hz: cutoff as u32 });
-            } else if cutoff < 18000.0 {
-                defects.push(DefectType::OggVorbisTranscode { cutoff_hz: cutoff as u32 });
-            } else if cutoff < 19500.0 {
-                defects.push(DefectType::AacTranscode { cutoff_hz: cutoff as u32 });
-            } else {
-                // 19.5-20.5 kHz could be high bitrate MP3 or AAC
-                defects.push(DefectType::Mp3Transcode { cutoff_hz: cutoff as u32 });
-            }
-        }
-        
-        // Add spectral artifacts if detected in low cutoff scenarios
-        if has_artifacts {
-            defects.push(DefectType::SpectralArtifacts);
-        }
-    } else if cutoff_ratio >= 0.80 && cutoff_ratio < 0.95 && has_artifacts {
-        // High cutoff but with artifacts - likely high bitrate lossy
-        defects.push(DefectType::SpectralArtifacts);
-    }
-
-    // Detect ACTUAL bit depth from samples
-    let actual_bit_depth = detect_actual_bit_depth(audio);
-    let (dynamic_range, noise_floor, peak_amp) = calculate_simple_dynamic_range(audio);
-
-    // Flag bit depth mismatch if significant (8-bit difference minimum)
-    if actual_bit_depth <= 16 && audio.bit_depth >= 24 && (audio.bit_depth - actual_bit_depth) >= 8 {
-        defects.push(DefectType::BitDepthMismatch {
-            claimed: audio.bit_depth,
-            actual: actual_bit_depth,
+    // Detect transcodes from spectral signature
+    detect_transcode_from_spectral(&spectral_analysis, audio, &mut defects);
+    
+    // ===== Bit Depth Analysis =====
+    let bit_depth_analysis = analyze_bit_depth(audio);
+    
+    if bit_depth_analysis.is_mismatch {
+        defects.push(DetectedDefect {
+            defect_type: DefectType::BitDepthMismatch {
+                claimed: bit_depth_analysis.claimed_bit_depth,
+                actual: bit_depth_analysis.actual_bit_depth,
+                confidence: bit_depth_analysis.confidence,
+            },
+            confidence: bit_depth_analysis.confidence,
+            evidence: bit_depth_analysis.evidence.clone(),
         });
     }
-
-    // Check for upsampling
-    if check_upsampling {
-        if let Some(original_rate) = detect_upsampling(audio, cutoff, cutoff_ratio) {
-            defects.push(DefectType::Upsampled {
-                from: original_rate,
-                to: audio.sample_rate,
+    
+    // ===== Upsampling Analysis =====
+    let upsampling_analysis = if config.check_upsampling {
+        analyze_upsampling(audio, &spectral_analysis)
+    } else {
+        UpsamplingAnalysis {
+            is_upsampled: false,
+            original_sample_rate: None,
+            current_sample_rate: audio.sample_rate,
+            confidence: 0.0,
+            detection_method: None,
+            evidence: vec![],
+            method_results: crate::upsampling::UpsamplingMethodResults {
+                spectral_detected: false,
+                spectral_original_rate: None,
+                spectral_confidence: 0.0,
+                null_test_detected: false,
+                null_test_original_rate: None,
+                null_test_confidence: 0.0,
+                isp_detected: false,
+                isp_confidence: 0.0,
+            },
+        }
+    };
+    
+    if upsampling_analysis.is_upsampled && upsampling_analysis.confidence >= config.min_confidence {
+        if let Some(original_rate) = upsampling_analysis.original_sample_rate {
+            defects.push(DetectedDefect {
+                defect_type: DefectType::Upsampled {
+                    from: original_rate,
+                    to: audio.sample_rate,
+                    confidence: upsampling_analysis.confidence,
+                },
+                confidence: upsampling_analysis.confidence,
+                evidence: upsampling_analysis.evidence.clone(),
             });
         }
     }
-
+    
+    // ===== Stereo Analysis =====
+    let stereo_analysis = if config.check_stereo && audio.channels >= 2 {
+        Some(analyze_stereo(audio))
+    } else {
+        None
+    };
+    
+    if let Some(ref stereo) = stereo_analysis {
+        if stereo.joint_stereo_detected && stereo.joint_stereo_confidence >= config.min_confidence {
+            defects.push(DetectedDefect {
+                defect_type: DefectType::JointStereo {
+                    confidence: stereo.joint_stereo_confidence,
+                },
+                confidence: stereo.joint_stereo_confidence,
+                evidence: stereo.evidence.clone(),
+            });
+        }
+    }
+    
+    // ===== Pre-Echo Analysis =====
+    let pre_echo_analysis = if config.check_transients {
+        analyze_pre_echo(audio)
+    } else {
+        PreEchoAnalysis {
+            transient_count: 0,
+            pre_echo_count: 0,
+            avg_pre_echo_level: -120.0,
+            max_pre_echo_level: -120.0,
+            pre_echo_score: 0.0,
+            lossy_pre_echo_detected: false,
+            confidence: 0.0,
+            evidence: vec![],
+        }
+    };
+    
+    if pre_echo_analysis.lossy_pre_echo_detected && pre_echo_analysis.confidence >= config.min_confidence {
+        defects.push(DetectedDefect {
+            defect_type: DefectType::PreEcho {
+                score: pre_echo_analysis.pre_echo_score,
+            },
+            confidence: pre_echo_analysis.confidence,
+            evidence: pre_echo_analysis.evidence.clone(),
+        });
+    }
+    
+    // ===== Phase Analysis =====
+    let phase_analysis = if config.check_phase {
+        analyze_phase(audio)
+    } else {
+        PhaseAnalysis {
+            phase_coherence: 1.0,
+            discontinuity_score: 0.0,
+            phase_jump_count: 0,
+            codec_artifacts_likely: false,
+            confidence: 0.0,
+            evidence: vec![],
+        }
+    };
+    
+    if phase_analysis.codec_artifacts_likely && phase_analysis.confidence >= config.min_confidence {
+        defects.push(DetectedDefect {
+            defect_type: DefectType::PhaseDiscontinuities {
+                score: phase_analysis.discontinuity_score,
+            },
+            confidence: phase_analysis.confidence,
+            evidence: phase_analysis.evidence.clone(),
+        });
+    }
+    
+    // ===== True Peak Analysis =====
+    let true_peak_analysis = analyze_true_peak(audio);
+    
+    if true_peak_analysis.has_clipping {
+        defects.push(DetectedDefect {
+            defect_type: DefectType::Clipping {
+                percentage: true_peak_analysis.clipping_percentage,
+            },
+            confidence: 0.95,
+            evidence: vec![format!("{:.3}% of samples clipped", 
+                true_peak_analysis.clipping_percentage * 100.0)],
+        });
+    }
+    
+    if true_peak_analysis.has_inter_sample_overs {
+        defects.push(DetectedDefect {
+            defect_type: DefectType::InterSampleOvers {
+                count: true_peak_analysis.inter_sample_over_count,
+                max_level_db: true_peak_analysis.max_over_level,
+            },
+            confidence: 0.9,
+            evidence: vec![format!("{} inter-sample overs, max {:.1} dB over",
+                true_peak_analysis.inter_sample_over_count,
+                true_peak_analysis.max_over_level)],
+        });
+    }
+    
+    // ===== Spectral Artifacts =====
+    if spectral_analysis.has_artifacts {
+        defects.push(DetectedDefect {
+            defect_type: DefectType::SpectralArtifacts {
+                artifact_score: spectral_analysis.artifact_score,
+            },
+            confidence: 0.7,
+            evidence: vec![format!("Artifact score: {:.2}", spectral_analysis.artifact_score)],
+        });
+    }
+    
+    // ===== Calculate Overall Quality Score =====
+    let quality_score = calculate_quality_score(&defects);
+    let is_likely_lossless = quality_score > 0.7 && defects.iter()
+        .filter(|d| matches!(d.defect_type, 
+            DefectType::Mp3Transcode { .. } |
+            DefectType::AacTranscode { .. } |
+            DefectType::OggVorbisTranscode { .. } |
+            DefectType::OpusTranscode { .. } |
+            DefectType::BitDepthMismatch { .. } |
+            DefectType::Upsampled { .. }
+        ))
+        .count() == 0;
+    
+    // Filter defects by confidence threshold
+    let defects: Vec<DetectedDefect> = defects.into_iter()
+        .filter(|d| d.confidence >= config.min_confidence)
+        .collect();
+    
     Ok(QualityReport {
         sample_rate: audio.sample_rate,
         channels: audio.channels,
-        claimed_bit_depth: audio.bit_depth,
-        actual_bit_depth,
+        claimed_bit_depth: audio.claimed_bit_depth,
+        actual_bit_depth: bit_depth_analysis.actual_bit_depth,
         duration_secs: audio.duration_secs,
-        frequency_cutoff: cutoff,
-        dynamic_range,
-        noise_floor,
-        peak_amplitude: peak_amp,
-        spectral_rolloff: rolloff,
+        codec_name: audio.codec_name.clone(),
+        
+        frequency_cutoff: spectral_analysis.frequency_cutoff,
+        spectral_rolloff: spectral_analysis.rolloff_95,
+        rolloff_steepness: spectral_analysis.rolloff_steepness,
+        has_brick_wall: spectral_analysis.has_brick_wall,
+        spectral_flatness: spectral_analysis.spectral_flatness,
+        
+        dynamic_range: true_peak_analysis.loudness_info.dynamic_range_db,
+        noise_floor: true_peak_analysis.loudness_info.rms_dbfs,
+        peak_amplitude: true_peak_analysis.sample_peak_dbfs,
+        true_peak: true_peak_analysis.true_peak_dbfs,
+        crest_factor: true_peak_analysis.loudness_info.crest_factor_db,
+        
+        stereo_width: stereo_analysis.as_ref().map(|s| s.stereo_width),
+        channel_correlation: stereo_analysis.as_ref().map(|s| s.channel_correlation),
+        
         defects,
+        quality_score,
+        is_likely_lossless,
+        
+        spectral_analysis,
+        bit_depth_analysis,
+        stereo_analysis,
+        pre_echo_analysis,
+        phase_analysis,
+        upsampling_analysis,
+        true_peak_analysis,
     })
 }
 
-
-fn detect_actual_bit_depth(audio: &AudioData) -> u32 {
-    let samples = &audio.samples;
+/// Detect transcodes from spectral analysis
+fn detect_transcode_from_spectral(
+    spectral: &SpectralAnalysis,
+    audio: &AudioData,
+    defects: &mut Vec<DetectedDefect>,
+) {
+    let nyquist = audio.sample_rate as f32 / 2.0;
+    let cutoff_ratio = spectral.frequency_cutoff / nyquist;
     
-    if samples.is_empty() {
-        return audio.bit_depth;
+    // Only check if cutoff is significantly below Nyquist
+    if cutoff_ratio >= 0.85 {
+        return;  // Cutoff too high to indicate transcode
     }
     
-    // Use three independent methods
-    let lsb_depth = analyze_lsb_precision(samples);
-    let quantization_depth = analyze_quantization_noise(audio);
-    let distribution_depth = analyze_value_distribution(samples);
+    // Confidence decreases as cutoff approaches Nyquist
+    let base_confidence = (0.85 - cutoff_ratio) / 0.35;  // 0.0 at 85%, 1.0 at 50%
+    let base_confidence = base_confidence.clamp(0.0, 1.0);
     
-    // Take the median of the three methods for robustness
-    let mut estimates = vec![lsb_depth, quantization_depth, distribution_depth];
-    estimates.sort();
-    estimates[1]  // Return median
-}
-
-
-fn analyze_lsb_precision(samples: &[f32]) -> u32 {
-    // Analyze least significant bit patterns to determine actual precision
-    let mut bit_patterns: HashMap<u32, u32> = HashMap::new();
-    let test_samples = samples.len().min(50000);
-    
-    for &sample in samples.iter().take(test_samples) {
-        if sample.abs() < 1e-10 {
-            continue;  // Skip near-zero samples
-        }
-        
-        // Scale to 24-bit integer range
-        let scaled = (sample * 8388607.0) as i32;
-        
-        if scaled != 0 {
-            let trailing_zeros = scaled.trailing_zeros();
-            *bit_patterns.entry(trailing_zeros).or_insert(0) += 1;
-        }
-    }
-    
-    if bit_patterns.is_empty() {
-        return 16;
-    }
-    
-    // Find the median trailing zeros
-    let total: u32 = bit_patterns.values().sum();
-    let mut cumulative = 0u32;
-    let mut sorted: Vec<_> = bit_patterns.iter().collect();
-    sorted.sort_by_key(|(zeros, _)| *zeros);
-    
-    let mut median_zeros = 0u32;
-    for (zeros, count) in sorted {
-        cumulative += count;
-        if cumulative >= total / 2 {
-            median_zeros = *zeros;
-            break;
-        }
-    }
-    
-    // Calculate effective bits
-    let effective_bits = 24 - median_zeros;
-    
-    if effective_bits >= 20 {
-        24
-    } else if effective_bits >= 14 {
-        16
+    // Adjust confidence based on brick wall and rolloff steepness
+    let confidence = if spectral.has_brick_wall {
+        (base_confidence * 0.7 + 0.3).min(0.95)
     } else {
-        8
-    }
-}
-
-
-fn analyze_quantization_noise(audio: &AudioData) -> u32 {
-    let samples = &audio.samples;
-    let section_size = 8192;
-    let num_sections = samples.len() / section_size;
-    
-    if num_sections == 0 {
-        return audio.bit_depth;
-    }
-    
-    // Find the quietest section
-    let mut min_rms = f32::MAX;
-    let mut quietest_start = 0;
-    
-    for i in 0..num_sections {
-        let start = i * section_size;
-        let end = (start + section_size).min(samples.len());
-        let section = &samples[start..end];
-        
-        let rms: f32 = section.iter()
-            .map(|s| s * s)
-            .sum::<f32>() / section.len() as f32;
-        
-        if rms < min_rms && rms > 1e-10 {
-            min_rms = rms;
-            quietest_start = start;
-        }
-    }
-    
-    // Analyze quantization noise in quiet section
-    let end = (quietest_start + section_size).min(samples.len());
-    let quiet_section = &samples[quietest_start..end];
-    
-    let mut diffs: Vec<f32> = quiet_section.windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .filter(|&d| d > 1e-10)
-        .collect();
-    
-    if diffs.is_empty() {
-        return audio.bit_depth;
-    }
-    
-    diffs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median_diff = diffs[diffs.len() / 2];
-    
-    let noise_db = if median_diff > 1e-10 {
-        20.0 * median_diff.log10()
-    } else {
-        -120.0
+        base_confidence * 0.6
     };
     
-    // Classify based on noise floor
-    if noise_db < -115.0 {
-        24
-    } else if noise_db < -75.0 {
-        16
+    if confidence < 0.4 {
+        return;  // Not confident enough
+    }
+    
+    let cutoff_hz = spectral.frequency_cutoff as u32;
+    
+    // Determine codec type based on characteristics
+    let defect_type = if spectral.has_brick_wall && spectral.rolloff_steepness > 25.0 {
+        // Sharp cutoff suggests MP3
+        let bitrate = estimate_mp3_bitrate(cutoff_hz);
+        DefectType::Mp3Transcode { 
+            cutoff_hz, 
+            estimated_bitrate: bitrate,
+        }
+    } else if spectral.has_shelf_pattern {
+        // Shelf pattern suggests AAC
+        let bitrate = estimate_aac_bitrate(cutoff_hz);
+        DefectType::AacTranscode {
+            cutoff_hz,
+            estimated_bitrate: bitrate,
+        }
+    } else if cutoff_hz >= 7500 && cutoff_hz <= 12500 && spectral.has_brick_wall {
+        // Low cutoff with brick wall suggests Opus
+        let mode = if cutoff_hz <= 8500 {
+            "Wideband (8kHz)".to_string()
+        } else {
+            "Super-wideband (12kHz)".to_string()
+        };
+        DefectType::OpusTranscode { cutoff_hz, mode }
     } else {
-        8
-    }
-}
-
-
-fn analyze_value_distribution(samples: &[f32]) -> u32 {
-    let test_size = samples.len().min(100000);
-    
-    let mut values_16bit: HashSet<i16> = HashSet::new();
-    let mut values_24bit: HashSet<i32> = HashSet::new();
-    
-    for &sample in samples.iter().take(test_size) {
-        let q16 = (sample * 32767.0).round() as i16;
-        values_16bit.insert(q16);
-        
-        let q24 = (sample * 8388607.0).round() as i32;
-        values_24bit.insert(q24);
-    }
-    
-    let unique_16 = values_16bit.len();
-    let unique_24 = values_24bit.len();
-    
-    let ratio = unique_24 as f32 / unique_16.max(1) as f32;
-    
-    if ratio > 10.0 {
-        24
-    } else if ratio > 2.0 {
-        16
-    } else {
-        16
-    }
-}
-
-
-fn calculate_simple_dynamic_range(audio: &AudioData) -> (f32, f32, f32) {
-    let samples = &audio.samples;
-    
-    if samples.is_empty() {
-        return (0.0, -120.0, -120.0);
-    }
-    
-    let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-    let peak_db = if peak > 0.0 { 20.0 * peak.log10() } else { -120.0 };
-    
-    let rms: f32 = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
-    let rms_db = if rms > 0.0 { 20.0 * rms.log10() } else { -120.0 };
-    
-    let dynamic_range = (peak_db - rms_db).max(0.0);
-    
-    (dynamic_range, rms_db, peak_db)
-}
-
-
-fn analyze_frequency_spectrum(audio: &AudioData) -> Result<(f32, f32, bool)> {
-    let fft_size = 8192;
-    let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(fft_size);
-
-    // Take middle section of audio
-    let start = audio.samples.len() / 2;
-    let end = (start + fft_size * audio.channels).min(audio.samples.len());
-    
-    if end - start < fft_size {
-        return Ok((audio.sample_rate as f32 / 2.0, audio.sample_rate as f32 / 2.0, false));
-    }
-
-    // Extract mono channel
-    let mut signal: Vec<Complex<f32>> = audio.samples[start..end]
-        .chunks(audio.channels)
-        .take(fft_size)
-        .map(|chunk| Complex::new(chunk[0], 0.0))
-        .collect();
-
-    // Apply Hann window
-    for (i, sample) in signal.iter_mut().enumerate() {
-        let window = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / fft_size as f32).cos());
-        *sample *= window;
-    }
-
-    fft.process(&mut signal);
-
-    // Calculate magnitude spectrum
-    let magnitudes: Vec<f32> = signal[..fft_size / 2]
-        .iter()
-        .map(|c| (c.re * c.re + c.im * c.im).sqrt())
-        .collect();
-
-    let cutoff = find_frequency_cutoff(&magnitudes, audio.sample_rate);
-    let rolloff = find_spectral_rolloff(&magnitudes, audio.sample_rate);
-    let has_artifacts = detect_spectral_artifacts(&magnitudes);
-
-    Ok((cutoff, rolloff, has_artifacts))
-}
-
-
-fn find_frequency_cutoff(magnitudes: &[f32], sample_rate: u32) -> f32 {
-    if magnitudes.is_empty() {
-        return sample_rate as f32 / 2.0;
-    }
-    
-    let peak = magnitudes.iter().cloned().fold(0.0f32, f32::max);
-    
-    if peak < 1e-10 {
-        return sample_rate as f32 / 2.0;
-    }
-    
-    // Look for where magnitude drops below 1% of peak
-    let threshold = peak * 0.01;
-    
-    // Start from high frequencies and work down
-    for i in (magnitudes.len() / 2..magnitudes.len()).rev() {
-        if magnitudes[i] > threshold {
-            return i as f32 * sample_rate as f32 / (2.0 * magnitudes.len() as f32);
+        // Default to Vorbis for softer rolloffs
+        let quality = estimate_vorbis_quality(cutoff_hz);
+        DefectType::OggVorbisTranscode {
+            cutoff_hz,
+            estimated_quality: quality,
         }
-    }
+    };
     
-    sample_rate as f32 / 2.0
-}
-
-
-fn find_spectral_rolloff(magnitudes: &[f32], sample_rate: u32) -> f32 {
-    let total_energy: f32 = magnitudes.iter().map(|m| m * m).sum();
+    // Try to match against known signatures
+    let signature_match = match_signature(spectral);
     
-    if total_energy < 1e-10 {
-        return sample_rate as f32 / 2.0;
-    }
-    
-    let threshold = total_energy * 0.95;
-    let mut cumulative = 0.0;
-    
-    for (i, &mag) in magnitudes.iter().enumerate() {
-        cumulative += mag * mag;
-        if cumulative >= threshold {
-            return i as f32 * sample_rate as f32 / (2.0 * magnitudes.len() as f32);
-        }
-    }
-    
-    sample_rate as f32 / 2.0
-}
-
-
-fn detect_spectral_artifacts(magnitudes: &[f32]) -> bool {
-    if magnitudes.len() < 100 {
-        return false;
-    }
-    
-    let mut artifact_score = 0;
-    let window = 30;
-    
-    let start = magnitudes.len() / 3;
-    let end = magnitudes.len() * 2 / 3;
-    
-    for i in (start + window)..(end - window) {
-        let before: f32 = magnitudes[i - window..i].iter().sum::<f32>() / window as f32;
-        let after: f32 = magnitudes[i..i + window].iter().sum::<f32>() / window as f32;
-        let current = magnitudes[i];
-        
-        let avg = (before + after) / 2.0;
-        
-        if avg > 0.0 && current < avg * 0.15 {
-            artifact_score += 1;
-        }
-    }
-    
-    artifact_score > 50
-}
-
-
-fn detect_upsampling(audio: &AudioData, cutoff_freq: f32, _cutoff_ratio: f32) -> Option<u32> {
-    let sample_rate = audio.sample_rate;
-    
-    let rate_pairs = vec![
-        (44100, 88200),
-        (44100, 96000),
-        (44100, 176400),
-        (44100, 192000),
-        (48000, 96000),
-        (48000, 192000),
-        (96000, 176400),
-        (96000, 192000),
+    let mut evidence = vec![
+        format!("Frequency cutoff: {} Hz", cutoff_hz),
+        format!("Rolloff steepness: {:.1} dB/octave", spectral.rolloff_steepness),
     ];
     
-    for (original, upsampled) in rate_pairs {
-        if sample_rate == upsampled {
-            let original_nyquist = original as f32 / 2.0;
-            let diff_ratio = (cutoff_freq - original_nyquist).abs() / original_nyquist;
-            
-            // More lenient threshold for upsampling detection
-            if diff_ratio < 0.10 {
-                return Some(original);
-            }
-        }
+    if spectral.has_brick_wall {
+        evidence.push("Brick-wall cutoff detected".to_string());
+    }
+    if spectral.has_shelf_pattern {
+        evidence.push("Shelf pattern detected".to_string());
     }
     
-    None
+    if let Some((name, sig_conf)) = signature_match {
+        evidence.push(format!("Matches {} signature ({:.0}%)", name, sig_conf * 100.0));
+    }
+    
+    defects.push(DetectedDefect {
+        defect_type,
+        confidence,
+        evidence,
+    });
+}
+
+/// Estimate MP3 bitrate from cutoff frequency
+fn estimate_mp3_bitrate(cutoff_hz: u32) -> Option<u32> {
+    match cutoff_hz {
+        0..=11000 => Some(64),
+        11001..=14000 => Some(96),
+        14001..=16000 => Some(128),
+        16001..=17500 => Some(160),
+        17501..=18500 => Some(192),
+        18501..=19500 => Some(224),
+        19501..=20000 => Some(256),
+        20001..=20500 => Some(320),
+        _ => None,
+    }
+}
+
+/// Estimate AAC bitrate from cutoff frequency
+fn estimate_aac_bitrate(cutoff_hz: u32) -> Option<u32> {
+    match cutoff_hz {
+        0..=12000 => Some(64),
+        12001..=15000 => Some(96),
+        15001..=16500 => Some(128),
+        16501..=18000 => Some(192),
+        18001..=19500 => Some(256),
+        19501..=21000 => Some(320),
+        _ => None,
+    }
+}
+
+/// Estimate Vorbis quality from cutoff frequency
+fn estimate_vorbis_quality(cutoff_hz: u32) -> Option<u32> {
+    match cutoff_hz {
+        0..=15500 => Some(4),
+        15501..=16500 => Some(5),
+        16501..=17500 => Some(6),
+        17501..=18500 => Some(7),
+        18501..=19500 => Some(8),
+        19501..=20500 => Some(9),
+        20501..=22050 => Some(10),
+        _ => None,
+    }
+}
+
+/// Calculate overall quality score from defects
+fn calculate_quality_score(defects: &[DetectedDefect]) -> f32 {
+    if defects.is_empty() {
+        return 1.0;
+    }
+    
+    let mut score = 1.0f32;
+    
+    for defect in defects {
+        let penalty = match &defect.defect_type {
+            DefectType::Mp3Transcode { .. } => 0.8,
+            DefectType::AacTranscode { .. } => 0.75,
+            DefectType::OggVorbisTranscode { .. } => 0.7,
+            DefectType::OpusTranscode { .. } => 0.7,
+            DefectType::BitDepthMismatch { .. } => 0.5,
+            DefectType::Upsampled { .. } => 0.4,
+            DefectType::SpectralArtifacts { .. } => 0.2,
+            DefectType::JointStereo { .. } => 0.15,
+            DefectType::PreEcho { .. } => 0.3,
+            DefectType::PhaseDiscontinuities { .. } => 0.2,
+            DefectType::Clipping { .. } => 0.1,
+            DefectType::InterSampleOvers { .. } => 0.05,
+            DefectType::LowQuality { .. } => 0.3,
+        };
+        
+        score *= 1.0 - (penalty * defect.confidence);
+    }
+    
+    score.max(0.0)
+}
+
+/// Legacy function for backward compatibility
+pub fn detect_quality_issues_simple(
+    audio: &AudioData,
+    expected_bit_depth: u32,
+    check_upsampling: bool,
+) -> Result<QualityReport> {
+    let config = DetectionConfig {
+        expected_bit_depth,
+        check_upsampling,
+        ..Default::default()
+    };
+    
+    detect_quality_issues(audio, &config)
 }
