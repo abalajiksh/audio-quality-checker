@@ -233,32 +233,69 @@ fn run_single_test(binary: &Path, test_case: &TestCase) -> TestResult {
     // Extract quality score
     let quality_score = extract_quality_score(&stdout);
 
-    let mut defects_found = Vec::new();
+    let mut defects_found: Vec<String> = Vec::new();
 
-    if stdout.contains("MP3") || stdout.contains("Mp3") {
-        defects_found.push("Mp3Transcode".to_string());
-    }
-    if stdout.contains("AAC") || stdout.contains("Aac") {
-        defects_found.push("AacTranscode".to_string());
-    }
-    if stdout.contains("Opus") {
-        defects_found.push("OpusTranscode".to_string());
-    }
-    if stdout.contains("Vorbis") || stdout.contains("Ogg") {
-        defects_found.push("OggVorbisTranscode".to_string());
-    }
-    if stdout.contains("Bit depth mismatch") || stdout.contains("BitDepth") || stdout.contains("bit depth") {
-        defects_found.push("BitDepthMismatch".to_string());
-    }
-    if stdout.contains("Upsampled") || stdout.contains("upsampled") || stdout.contains("interpolat") {
-        defects_found.push("Upsampled".to_string());
-    }
-    if stdout.contains("Spectral") {
-        defects_found.push("SpectralArtifacts".to_string());
+    // if stdout.contains("MP3") || stdout.contains("Mp3") {
+    //     defects_found.push("Mp3Transcode".to_string());
+    // }
+    // if stdout.contains("AAC") || stdout.contains("Aac") {
+    //     defects_found.push("AacTranscode".to_string());
+    // }
+    // if stdout.contains("Opus") {
+    //     defects_found.push("OpusTranscode".to_string());
+    // }
+    // if stdout.contains("Vorbis") || stdout.contains("Ogg") {
+    //     defects_found.push("OggVorbisTranscode".to_string());
+    // }
+    // if stdout.contains("Bit depth mismatch") || stdout.contains("BitDepth") || stdout.contains("bit depth") {
+    //     defects_found.push("BitDepthMismatch".to_string());
+    // }
+    // if stdout.contains("Upsampled") || stdout.contains("upsampled") || stdout.contains("interpolat") {
+    //     defects_found.push("Upsampled".to_string());
+    // }
+    // if stdout.contains("Spectral") {
+    //     defects_found.push("SpectralArtifacts".to_string());
+    // }
+
+    // Parse output for v0.2 format
+    let is_clean = stdout.contains("✓ CLEAN") || stdout.contains("CLEAN - No issues");
+    let has_issues = stdout.contains("⚠ ISSUES DETECTED") || stdout.contains("ISSUES DETECTED");
+    
+    // Only parse defects if issues were detected
+
+    if has_issues {
+        // Look for defect lines (starting with •)
+        for line in stdout.lines() {
+            let line_lower = line.to_lowercase();
+            if line.contains("•") || line.contains("transcode") || line.contains("mismatch") {
+                if line_lower.contains("mp3") && line_lower.contains("transcode") {
+                    defects_found.push("Mp3Transcode".to_string());
+                }
+                if line_lower.contains("aac") && line_lower.contains("transcode") {
+                    defects_found.push("AacTranscode".to_string());
+                }
+                if line_lower.contains("opus") && line_lower.contains("transcode") {
+                    defects_found.push("OpusTranscode".to_string());
+                }
+                if (line_lower.contains("vorbis") || line_lower.contains("ogg")) 
+                    && line_lower.contains("transcode") {
+                    defects_found.push("OggVorbisTranscode".to_string());
+                }
+                if line_lower.contains("bit depth mismatch") {
+                    defects_found.push("BitDepthMismatch".to_string());
+                }
+                if line_lower.contains("upsampled") {
+                    defects_found.push("Upsampled".to_string());
+                }
+                if line_lower.contains("spectral artifacts") {
+                    defects_found.push("SpectralArtifacts".to_string());
+                }
+            }
+        }
     }
 
     TestResult {
-        passed: is_clean || is_lossless,
+        passed: is_clean,
         expected: test_case.should_pass,
         defects_found,
         description: test_case.description.clone(),
