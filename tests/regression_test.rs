@@ -10,10 +10,16 @@
 // - Upscale16: 16-bit → 24-bit padding = FAIL
 // - Upscaled: Lossy → Lossless = FAIL
 // - MasterScript: Complex transcoding chains - most should FAIL
+//
+// Parallelization: Tests run in parallel (4 threads) for faster CI/CD
 
 use std::process::Command;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::collections::HashMap;
 
+#[derive(Clone)]
 struct TestCase {
     file_path: String,
     should_pass: bool,
@@ -27,13 +33,16 @@ struct TestResult {
     passed: bool,
     expected: bool,
     defects_found: Vec<String>,
+    description: String,
+    category: String,
     #[allow(dead_code)]
     file: String,
     #[allow(dead_code)]
     quality_score: Option<f32>,
+    skipped: bool,
 }
 
-/// Main regression test - comprehensive coverage
+/// Main regression test - comprehensive coverage with parallel execution
 #[test]
 fn test_regression_suite() {
     let binary_path = get_binary_path();
@@ -48,62 +57,61 @@ fn test_regression_suite() {
     );
 
     println!("\n{}", "=".repeat(70));
-    println!("GROUND TRUTH REGRESSION TEST SUITE");
+    println!("GROUND TRUTH REGRESSION TEST SUITE (Parallel Execution)");
     println!("Using: {}", test_base.display());
     println!("{}\n", "=".repeat(70));
 
     let test_cases = define_regression_tests(&test_base);
+    let total_tests = test_cases.len();
+    
+    println!("Running {} regression tests in parallel (4 threads)...\n", total_tests);
+
+    // Run tests in parallel with 4 threads
+    let results = run_tests_parallel(&binary_path, test_cases, 4);
+    
+    // Analyze results
     let mut passed = 0;
     let mut failed = 0;
     let mut skipped = 0;
     let mut false_positives = 0;
     let mut false_negatives = 0;
-    let mut category_results: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
+    let mut category_results: HashMap<String, (u32, u32)> = HashMap::new();
 
-    println!("Running {} regression tests...\n", test_cases.len());
-
-    for (idx, test_case) in test_cases.iter().enumerate() {
-        // Skip if file doesn't exist (some MasterScript files may not be generated)
-        if !Path::new(&test_case.file_path).exists() {
-            println!("[{:3}/{}] SKIP: {} (file not found)", idx + 1, test_cases.len(), test_case.description);
+    for (idx, result) in results.iter().enumerate() {
+        if result.skipped {
             skipped += 1;
+            println!("[{:3}/{}] SKIP: {} (file not found)", idx + 1, total_tests, result.description);
             continue;
         }
 
-        let result = run_test(&binary_path, test_case);
-        let entry = category_results.entry(test_case.category.clone()).or_insert((0, 0));
+        let entry = category_results.entry(result.category.clone()).or_insert((0, 0));
 
         if result.passed == result.expected {
             passed += 1;
             entry.0 += 1;
-            println!("[{:3}/{}] ✓ PASS: {}", idx + 1, test_cases.len(), test_case.description);
+            println!("[{:3}/{}] ✓ PASS: {}", idx + 1, total_tests, result.description);
         } else {
             failed += 1;
             entry.1 += 1;
 
             if result.passed && !result.expected {
                 false_negatives += 1;
-                println!("[{:3}/{}] ✗ FALSE NEGATIVE: {}", idx + 1, test_cases.len(), test_case.description);
+                println!("[{:3}/{}] ✗ FALSE NEGATIVE: {}", idx + 1, total_tests, result.description);
                 println!("        Expected defects but got CLEAN");
             } else {
                 false_positives += 1;
-                println!("[{:3}/{}] ✗ FALSE POSITIVE: {}", idx + 1, test_cases.len(), test_case.description);
+                println!("[{:3}/{}] ✗ FALSE POSITIVE: {}", idx + 1, total_tests, result.description);
                 println!("        Expected CLEAN but detected defects: {:?}", result.defects_found);
             }
         }
-
-        // Progress indicator every 10 tests
-        if (idx + 1) % 10 == 0 {
-            println!("    ... {} tests completed", idx + 1);
-        }
     }
 
-    let total_run = test_cases.len() - skipped;
+    let total_run = total_tests - skipped;
     
     println!("\n{}", "=".repeat(70));
     println!("REGRESSION RESULTS");
     println!("{}", "=".repeat(70));
-    println!("Total Tests:       {}", test_cases.len());
+    println!("Total Tests:       {}", total_tests);
     println!("Skipped:           {} (files not found)", skipped);
     println!("Run:               {}", total_run);
     println!("Passed:            {} ({:.1}%)", passed, if total_run > 0 { (passed as f32 / total_run as f32) * 100.0 } else { 0.0 });
@@ -114,7 +122,9 @@ fn test_regression_suite() {
 
     // Category breakdown
     println!("\nCategory Results:");
-    for (category, (pass, fail)) in &category_results {
+    let mut categories: Vec<_> = category_results.iter().collect();
+    categories.sort_by_key(|(k, _)| k.as_str());
+    for (category, (pass, fail)) in categories {
         let total = pass + fail;
         if total > 0 {
             println!("  {}: {}/{} passed ({:.1}%)", category, pass, total, (*pass as f32 / total as f32) * 100.0);
@@ -130,6 +140,148 @@ fn test_regression_suite() {
     // For regression tests, we report but don't fail on detection issues
     // This allows tracking detector improvements over time
     // Change to assert_eq!(failed, 0, ...) if strict pass/fail is needed
+}
+
+/// Run tests in parallel using thread pool
+fn run_tests_parallel(binary: &Path, test_cases: Vec<TestCase>, num_threads: usize) -> Vec<TestResult> {
+    let binary = binary.to_path_buf();
+    let test_cases = Arc::new(test_cases);
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let index = Arc::new(Mutex::new(0usize));
+    
+    let mut handles = Vec::new();
+    
+    for _ in 0..num_threads {
+        let binary = binary.clone();
+        let test_cases = Arc::clone(&test_cases);
+        let results = Arc::clone(&results);
+        let index = Arc::clone(&index);
+        
+        let handle = thread::spawn(move || {
+            loop {
+                // Get next test case index
+                let current_idx = {
+                    let mut idx = index.lock().unwrap();
+                    if *idx >= test_cases.len() {
+                        return;
+                    }
+                    let current = *idx;
+                    *idx += 1;
+                    current
+                };
+                
+                // Run the test
+                let test_case = &test_cases[current_idx];
+                let result = run_single_test(&binary, test_case);
+                
+                // Store result
+                let mut results_guard = results.lock().unwrap();
+                results_guard.push((current_idx, result));
+            }
+        });
+        
+        handles.push(handle);
+    }
+    
+    // Wait for all threads to complete
+    for handle in handles {
+        handle.join().expect("Thread panicked");
+    }
+    
+    // Sort results by original index and extract
+    let mut results_vec: Vec<(usize, TestResult)> = Arc::try_unwrap(results)
+        .expect("Arc still has multiple owners")
+        .into_inner()
+        .expect("Mutex poisoned");
+    
+    results_vec.sort_by_key(|(idx, _)| *idx);
+    results_vec.into_iter().map(|(_, result)| result).collect()
+}
+
+fn run_single_test(binary: &Path, test_case: &TestCase) -> TestResult {
+    // Check if file exists first
+    if !Path::new(&test_case.file_path).exists() {
+        return TestResult {
+            passed: false,
+            expected: test_case.should_pass,
+            defects_found: vec![],
+            description: test_case.description.clone(),
+            category: test_case.category.clone(),
+            file: test_case.file_path.clone(),
+            quality_score: None,
+            skipped: true,
+        };
+    }
+
+    let output = Command::new(binary)
+        .arg("--input")
+        .arg(&test_case.file_path)
+        .arg("--bit-depth")
+        .arg("24")
+        .arg("--check-upsampling")
+        .output()
+        .expect("Failed to execute binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse output for v0.2 format
+    let has_issues = stdout.contains("ISSUES DETECTED") || stdout.contains("✗");
+    let is_clean = stdout.contains("CLEAN") && !has_issues;
+    let is_lossless = stdout.contains("likely lossless");
+
+    // Extract quality score
+    let quality_score = extract_quality_score(&stdout);
+
+    let mut defects_found = Vec::new();
+
+    if stdout.contains("MP3") || stdout.contains("Mp3") {
+        defects_found.push("Mp3Transcode".to_string());
+    }
+    if stdout.contains("AAC") || stdout.contains("Aac") {
+        defects_found.push("AacTranscode".to_string());
+    }
+    if stdout.contains("Opus") {
+        defects_found.push("OpusTranscode".to_string());
+    }
+    if stdout.contains("Vorbis") || stdout.contains("Ogg") {
+        defects_found.push("OggVorbisTranscode".to_string());
+    }
+    if stdout.contains("Bit depth mismatch") || stdout.contains("BitDepth") || stdout.contains("bit depth") {
+        defects_found.push("BitDepthMismatch".to_string());
+    }
+    if stdout.contains("Upsampled") || stdout.contains("upsampled") || stdout.contains("interpolat") {
+        defects_found.push("Upsampled".to_string());
+    }
+    if stdout.contains("Spectral") {
+        defects_found.push("SpectralArtifacts".to_string());
+    }
+
+    TestResult {
+        passed: is_clean || is_lossless,
+        expected: test_case.should_pass,
+        defects_found,
+        description: test_case.description.clone(),
+        category: test_case.category.clone(),
+        file: test_case.file_path.clone(),
+        quality_score,
+        skipped: false,
+    }
+}
+
+/// Extract quality score from output (e.g., "Quality Score: 85%")
+fn extract_quality_score(output: &str) -> Option<f32> {
+    for line in output.lines() {
+        if line.contains("Quality Score:") {
+            if let Some(pct_pos) = line.find('%') {
+                let start = line.rfind(':').map(|p| p + 1).unwrap_or(0);
+                let num_str = line[start..pct_pos].trim();
+                if let Ok(val) = num_str.parse::<f32>() {
+                    return Some(val / 100.0);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn get_binary_path() -> PathBuf {
@@ -607,77 +759,6 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
     });
 
     cases
-}
-
-/// Extract quality score from output (e.g., "Quality Score: 85%")
-fn extract_quality_score(output: &str) -> Option<f32> {
-    // Look for pattern like "Quality Score: XX%" or "quality_score: 0.XX"
-    for line in output.lines() {
-        if line.contains("Quality Score:") {
-            // Parse "Quality Score: 85%"
-            if let Some(pct_pos) = line.find('%') {
-                let start = line.rfind(':').map(|p| p + 1).unwrap_or(0);
-                let num_str = line[start..pct_pos].trim();
-                if let Ok(val) = num_str.parse::<f32>() {
-                    return Some(val / 100.0);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn run_test(binary: &Path, test_case: &TestCase) -> TestResult {
-    let output = Command::new(binary)
-        .arg("--input")
-        .arg(&test_case.file_path)
-        .arg("--bit-depth")
-        .arg("24")
-        .arg("--check-upsampling")
-        .output()
-        .expect("Failed to execute binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Parse output for v0.2 format
-    let has_issues = stdout.contains("ISSUES DETECTED") || stdout.contains("✗");
-    let is_clean = stdout.contains("CLEAN") && !has_issues;
-    let is_lossless = stdout.contains("likely lossless");
-
-    // Extract quality score
-    let quality_score = extract_quality_score(&stdout);
-
-    let mut defects_found = Vec::new();
-
-    if stdout.contains("MP3") || stdout.contains("Mp3") {
-        defects_found.push("Mp3Transcode".to_string());
-    }
-    if stdout.contains("AAC") || stdout.contains("Aac") {
-        defects_found.push("AacTranscode".to_string());
-    }
-    if stdout.contains("Opus") {
-        defects_found.push("OpusTranscode".to_string());
-    }
-    if stdout.contains("Vorbis") || stdout.contains("Ogg") {
-        defects_found.push("OggVorbisTranscode".to_string());
-    }
-    if stdout.contains("Bit depth mismatch") || stdout.contains("BitDepth") || stdout.contains("bit depth") {
-        defects_found.push("BitDepthMismatch".to_string());
-    }
-    if stdout.contains("Upsampled") || stdout.contains("upsampled") || stdout.contains("interpolat") {
-        defects_found.push("Upsampled".to_string());
-    }
-    if stdout.contains("Spectral") {
-        defects_found.push("SpectralArtifacts".to_string());
-    }
-
-    TestResult {
-        passed: is_clean || is_lossless,
-        expected: test_case.should_pass,
-        defects_found,
-        file: test_case.file_path.clone(),
-        quality_score,
-    }
 }
 
 #[test]
