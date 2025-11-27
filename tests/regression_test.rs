@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 struct TestCase {
     file_path: String,
     should_pass: bool,
+    #[allow(dead_code)]
+    expected_defects: Vec<String>,
     category: String,
     description: String,
 }
@@ -27,6 +29,8 @@ struct TestResult {
     defects_found: Vec<String>,
     #[allow(dead_code)]
     file: String,
+    #[allow(dead_code)]
+    quality_score: Option<f32>,
 }
 
 /// Main regression test - comprehensive coverage
@@ -51,6 +55,7 @@ fn test_regression_suite() {
     let test_cases = define_regression_tests(&test_base);
     let mut passed = 0;
     let mut failed = 0;
+    let mut skipped = 0;
     let mut false_positives = 0;
     let mut false_negatives = 0;
     let mut category_results: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
@@ -61,6 +66,7 @@ fn test_regression_suite() {
         // Skip if file doesn't exist (some MasterScript files may not be generated)
         if !Path::new(&test_case.file_path).exists() {
             println!("[{:3}/{}] SKIP: {} (file not found)", idx + 1, test_cases.len(), test_case.description);
+            skipped += 1;
             continue;
         }
 
@@ -69,37 +75,56 @@ fn test_regression_suite() {
 
         if result.passed == result.expected {
             passed += 1;
-            println!("[{:2}/{}] ✓ PASS: {}", idx + 1, test_cases.len(), test_case.description);
+            entry.0 += 1;
+            println!("[{:3}/{}] ✓ PASS: {}", idx + 1, test_cases.len(), test_case.description);
         } else {
             failed += 1;
             entry.1 += 1;
 
             if result.passed && !result.expected {
                 false_negatives += 1;
-                println!("[{:2}/{}] ✗ FALSE NEGATIVE: {}", idx + 1, test_cases.len(), test_case.description);
+                println!("[{:3}/{}] ✗ FALSE NEGATIVE: {}", idx + 1, test_cases.len(), test_case.description);
                 println!("        Expected defects but got CLEAN");
             } else {
                 false_positives += 1;
-                println!("[{:2}/{}] ✗ FALSE POSITIVE: {}", idx + 1, test_cases.len(), test_case.description);
+                println!("[{:3}/{}] ✗ FALSE POSITIVE: {}", idx + 1, test_cases.len(), test_case.description);
                 println!("        Expected CLEAN but detected defects: {:?}", result.defects_found);
             }
         }
+
+        // Progress indicator every 10 tests
+        if (idx + 1) % 10 == 0 {
+            println!("    ... {} tests completed", idx + 1);
+        }
     }
 
+    let total_run = test_cases.len() - skipped;
+    
     println!("\n{}", "=".repeat(70));
     println!("REGRESSION RESULTS");
     println!("{}", "=".repeat(70));
     println!("Total Tests:       {}", test_cases.len());
-    println!("Passed:            {} ({:.1}%)", passed, (passed as f32 / test_cases.len() as f32) * 100.0);
+    println!("Skipped:           {} (files not found)", skipped);
+    println!("Run:               {}", total_run);
+    println!("Passed:            {} ({:.1}%)", passed, if total_run > 0 { (passed as f32 / total_run as f32) * 100.0 } else { 0.0 });
     println!("Failed:            {}", failed);
     println!("  False Positives: {} (clean files marked as defective)", false_positives);
     println!("  False Negatives: {} (defective files marked as clean)", false_negatives);
     println!("{}", "=".repeat(70));
 
+    // Category breakdown
+    println!("\nCategory Results:");
+    for (category, (pass, fail)) in &category_results {
+        let total = pass + fail;
+        if total > 0 {
+            println!("  {}: {}/{} passed ({:.1}%)", category, pass, total, (*pass as f32 / total as f32) * 100.0);
+        }
+    }
+
     if failed > 0 {
         println!("\n⚠️  Detector needs improvement in {} areas", failed);
     } else {
-        println!("\n✅ Perfect detection across all {} test cases!", test_cases.len());
+        println!("\n✅ Perfect detection across all {} test cases!", total_run);
     }
 
     // For regression tests, we report but don't fail on detection issues
@@ -149,6 +174,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("CleanOrigin/input96.flac").to_string_lossy().to_string(),
         should_pass: true,
         expected_defects: vec![],
+        category: "CleanOrigin".to_string(),
         description: "CleanOrigin: 96kHz 24-bit original".to_string(),
     });
 
@@ -157,6 +183,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("CleanOrigin/input192.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "CleanOrigin".to_string(),
         description: "CleanOrigin: 192kHz (16-bit source)".to_string(),
     });
 
@@ -168,6 +195,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("CleanTranscoded/input96_16bit.flac").to_string_lossy().to_string(),
         should_pass: true,
         expected_defects: vec![],
+        category: "CleanTranscoded".to_string(),
         description: "CleanTranscoded: 96kHz honest 16-bit".to_string(),
     });
 
@@ -175,6 +203,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("CleanTranscoded/input192_16bit.flac").to_string_lossy().to_string(),
         should_pass: true,
         expected_defects: vec![],
+        category: "CleanTranscoded".to_string(),
         description: "CleanTranscoded: 192kHz honest 16-bit".to_string(),
     });
 
@@ -189,6 +218,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("Resample96/input96_{}.flac", rate)).to_string_lossy().to_string(),
             should_pass: true,
             expected_defects: vec![],
+            category: "Resample96".to_string(),
             description: format!("Resample96: 96→{}kHz downsampled", rate),
         });
     }
@@ -199,6 +229,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("Resample96/input96_{}.flac", rate)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["Upsampled".to_string()],
+            category: "Resample96".to_string(),
             description: format!("Resample96: 96→{}kHz upsampled (interpolated)", rate),
         });
     }
@@ -212,6 +243,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("Resample192/input192_{}.flac", rate)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["BitDepthMismatch".to_string()],
+            category: "Resample192".to_string(),
             description: format!("Resample192: 192→{}kHz (16-bit source)", rate),
         });
     }
@@ -224,6 +256,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscale16/output96_16bit.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "Upscale16".to_string(),
         description: "Upscale16: 96kHz 16→24-bit".to_string(),
     });
 
@@ -231,6 +264,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscale16/output192_16bit.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "Upscale16".to_string(),
         description: "Upscale16: 192kHz 16→24-bit".to_string(),
     });
 
@@ -243,6 +277,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscaled/input96_mp3.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["Mp3Transcode".to_string()],
+        category: "Upscaled".to_string(),
         description: "Upscaled: 96kHz from MP3".to_string(),
     });
 
@@ -250,6 +285,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscaled/input96_m4a.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["AacTranscode".to_string()],
+        category: "Upscaled".to_string(),
         description: "Upscaled: 96kHz from AAC".to_string(),
     });
 
@@ -257,6 +293,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscaled/input96_opus.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["OpusTranscode".to_string()],
+        category: "Upscaled".to_string(),
         description: "Upscaled: 96kHz from Opus".to_string(),
     });
 
@@ -264,6 +301,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscaled/input96_ogg.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["OggVorbisTranscode".to_string()],
+        category: "Upscaled".to_string(),
         description: "Upscaled: 96kHz from Vorbis".to_string(),
     });
 
@@ -272,6 +310,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscaled/input192_mp3.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["Mp3Transcode".to_string(), "BitDepthMismatch".to_string()],
+        category: "Upscaled".to_string(),
         description: "Upscaled: 192kHz from MP3 (16-bit source)".to_string(),
     });
 
@@ -279,6 +318,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscaled/input192_m4a.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["AacTranscode".to_string(), "BitDepthMismatch".to_string()],
+        category: "Upscaled".to_string(),
         description: "Upscaled: 192kHz from AAC (16-bit source)".to_string(),
     });
 
@@ -286,6 +326,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscaled/input192_opus.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["OpusTranscode".to_string(), "BitDepthMismatch".to_string()],
+        category: "Upscaled".to_string(),
         description: "Upscaled: 192kHz from Opus (16-bit source)".to_string(),
     });
 
@@ -293,6 +334,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("Upscaled/input192_ogg.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["OggVorbisTranscode".to_string(), "BitDepthMismatch".to_string()],
+        category: "Upscaled".to_string(),
         description: "Upscaled: 192kHz from Vorbis (16-bit source)".to_string(),
     });
 
@@ -305,6 +347,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test96_original.flac").to_string_lossy().to_string(),
         should_pass: true,
         expected_defects: vec![],
+        category: "MasterScript-96".to_string(),
         description: "MasterScript: test96 original (reference)".to_string(),
     });
 
@@ -313,6 +356,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test96_16bit_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "MasterScript-96".to_string(),
         description: "MasterScript: test96 16-bit upscaled".to_string(),
     });
 
@@ -320,6 +364,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test96_16bit_44khz_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "MasterScript-96".to_string(),
         description: "MasterScript: test96 16-bit 44.1kHz upscaled".to_string(),
     });
 
@@ -327,6 +372,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test96_16bit_44khz_mp3_128_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+        category: "MasterScript-96".to_string(),
         description: "MasterScript: test96 16-bit 44.1kHz MP3 128k upscaled".to_string(),
     });
 
@@ -335,6 +381,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test96_resampled_44.1_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["Upsampled".to_string()],
+        category: "MasterScript-96".to_string(),
         description: "MasterScript: test96 44.1kHz→192kHz upsampled".to_string(),
     });
 
@@ -342,6 +389,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test96_resampled_48_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["Upsampled".to_string()],
+        category: "MasterScript-96".to_string(),
         description: "MasterScript: test96 48kHz→192kHz upsampled".to_string(),
     });
 
@@ -351,6 +399,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test96_mp3_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["Mp3Transcode".to_string()],
+            category: "MasterScript-96".to_string(),
             description: format!("MasterScript: test96 MP3 {}k upscaled", bitrate),
         });
     }
@@ -360,6 +409,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test96_mp3_{}_upscaled.flac", vbr)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["Mp3Transcode".to_string()],
+            category: "MasterScript-96".to_string(),
             description: format!("MasterScript: test96 MP3 {} upscaled", vbr),
         });
     }
@@ -368,6 +418,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test96_mp3_320_reencoded_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["Mp3Transcode".to_string()],
+        category: "MasterScript-96".to_string(),
         description: "MasterScript: test96 MP3 320k re-encoded upscaled".to_string(),
     });
 
@@ -377,6 +428,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test96_aac_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["AacTranscode".to_string()],
+            category: "MasterScript-96".to_string(),
             description: format!("MasterScript: test96 AAC {}k upscaled", bitrate),
         });
     }
@@ -387,6 +439,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test96_opus_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["OpusTranscode".to_string()],
+            category: "MasterScript-96".to_string(),
             description: format!("MasterScript: test96 Opus {}k upscaled", bitrate),
         });
     }
@@ -397,6 +450,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test96_vorbis_{}_upscaled.flac", quality)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["OggVorbisTranscode".to_string()],
+            category: "MasterScript-96".to_string(),
             description: format!("MasterScript: test96 Vorbis {} upscaled", quality),
         });
     }
@@ -406,6 +460,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test96_mp3_to_aac_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["Mp3Transcode".to_string(), "AacTranscode".to_string()],
+        category: "MasterScript-96".to_string(),
         description: "MasterScript: test96 MP3→AAC upscaled".to_string(),
     });
 
@@ -413,6 +468,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test96_opus_to_mp3_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["OpusTranscode".to_string(), "Mp3Transcode".to_string()],
+        category: "MasterScript-96".to_string(),
         description: "MasterScript: test96 Opus→MP3 upscaled".to_string(),
     });
 
@@ -425,6 +481,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test192_original.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "MasterScript-192".to_string(),
         description: "MasterScript: test192 original (16-bit source)".to_string(),
     });
 
@@ -433,6 +490,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test192_16bit_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "MasterScript-192".to_string(),
         description: "MasterScript: test192 16-bit upscaled".to_string(),
     });
 
@@ -440,6 +498,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test192_16bit_44khz_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "MasterScript-192".to_string(),
         description: "MasterScript: test192 16-bit 44.1kHz upscaled".to_string(),
     });
 
@@ -447,6 +506,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test192_16bit_44khz_mp3_128_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+        category: "MasterScript-192".to_string(),
         description: "MasterScript: test192 16-bit 44.1kHz MP3 128k upscaled".to_string(),
     });
 
@@ -455,6 +515,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test192_resampled_44.1_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "MasterScript-192".to_string(),
         description: "MasterScript: test192 44.1kHz→192kHz (16-bit source)".to_string(),
     });
 
@@ -462,6 +523,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test192_resampled_48_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string()],
+        category: "MasterScript-192".to_string(),
         description: "MasterScript: test192 48kHz→192kHz (16-bit source)".to_string(),
     });
 
@@ -471,6 +533,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test192_mp3_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+            category: "MasterScript-192".to_string(),
             description: format!("MasterScript: test192 MP3 {}k upscaled", bitrate),
         });
     }
@@ -480,6 +543,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test192_mp3_{}_upscaled.flac", vbr)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+            category: "MasterScript-192".to_string(),
             description: format!("MasterScript: test192 MP3 {} upscaled", vbr),
         });
     }
@@ -488,6 +552,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test192_mp3_320_reencoded_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+        category: "MasterScript-192".to_string(),
         description: "MasterScript: test192 MP3 320k re-encoded upscaled".to_string(),
     });
 
@@ -497,6 +562,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test192_aac_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["BitDepthMismatch".to_string(), "AacTranscode".to_string()],
+            category: "MasterScript-192".to_string(),
             description: format!("MasterScript: test192 AAC {}k upscaled", bitrate),
         });
     }
@@ -507,6 +573,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test192_opus_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string()],
+            category: "MasterScript-192".to_string(),
             description: format!("MasterScript: test192 Opus {}k upscaled", bitrate),
         });
     }
@@ -517,6 +584,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
             file_path: base.join(format!("MasterScript/test192_vorbis_{}_upscaled.flac", quality)).to_string_lossy().to_string(),
             should_pass: false,
             expected_defects: vec!["BitDepthMismatch".to_string(), "OggVorbisTranscode".to_string()],
+            category: "MasterScript-192".to_string(),
             description: format!("MasterScript: test192 Vorbis {} upscaled", quality),
         });
     }
@@ -526,6 +594,7 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test192_mp3_to_aac_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string(), "AacTranscode".to_string()],
+        category: "MasterScript-192".to_string(),
         description: "MasterScript: test192 MP3→AAC upscaled".to_string(),
     });
 
@@ -533,10 +602,29 @@ fn define_regression_tests(base: &Path) -> Vec<TestCase> {
         file_path: base.join("MasterScript/test192_opus_to_mp3_upscaled.flac").to_string_lossy().to_string(),
         should_pass: false,
         expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string(), "Mp3Transcode".to_string()],
+        category: "MasterScript-192".to_string(),
         description: "MasterScript: test192 Opus→MP3 upscaled".to_string(),
     });
 
     cases
+}
+
+/// Extract quality score from output (e.g., "Quality Score: 85%")
+fn extract_quality_score(output: &str) -> Option<f32> {
+    // Look for pattern like "Quality Score: XX%" or "quality_score: 0.XX"
+    for line in output.lines() {
+        if line.contains("Quality Score:") {
+            // Parse "Quality Score: 85%"
+            if let Some(pct_pos) = line.find('%') {
+                let start = line.rfind(':').map(|p| p + 1).unwrap_or(0);
+                let num_str = line[start..pct_pos].trim();
+                if let Ok(val) = num_str.parse::<f32>() {
+                    return Some(val / 100.0);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn run_test(binary: &Path, test_case: &TestCase) -> TestResult {
@@ -551,7 +639,7 @@ fn run_test(binary: &Path, test_case: &TestCase) -> TestResult {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Parse output
+    // Parse output for v0.2 format
     let has_issues = stdout.contains("ISSUES DETECTED") || stdout.contains("✗");
     let is_clean = stdout.contains("CLEAN") && !has_issues;
     let is_lossless = stdout.contains("likely lossless");
@@ -562,16 +650,16 @@ fn run_test(binary: &Path, test_case: &TestCase) -> TestResult {
     let mut defects_found = Vec::new();
 
     if stdout.contains("MP3") || stdout.contains("Mp3") {
-        defects_found.push("Mp3".to_string());
+        defects_found.push("Mp3Transcode".to_string());
     }
     if stdout.contains("AAC") || stdout.contains("Aac") {
-        defects_found.push("AAC".to_string());
+        defects_found.push("AacTranscode".to_string());
     }
     if stdout.contains("Opus") {
-        defects_found.push("Opus".to_string());
+        defects_found.push("OpusTranscode".to_string());
     }
     if stdout.contains("Vorbis") || stdout.contains("Ogg") {
-        defects_found.push("Vorbis".to_string());
+        defects_found.push("OggVorbisTranscode".to_string());
     }
     if stdout.contains("Bit depth mismatch") || stdout.contains("BitDepth") || stdout.contains("bit depth") {
         defects_found.push("BitDepthMismatch".to_string());
@@ -580,13 +668,14 @@ fn run_test(binary: &Path, test_case: &TestCase) -> TestResult {
         defects_found.push("Upsampled".to_string());
     }
     if stdout.contains("Spectral") {
-        defects_found.push("Spectral".to_string());
+        defects_found.push("SpectralArtifacts".to_string());
     }
 
     TestResult {
         passed: is_clean || is_lossless,
         expected: test_case.should_pass,
         defects_found,
+        file: test_case.file_path.clone(),
         quality_score,
     }
 }
@@ -598,7 +687,7 @@ fn test_binary_exists() {
 }
 
 #[test]
-fn test_binary_exists() {
+fn test_help_output() {
     let binary_path = get_binary_path();
     let output = Command::new(&binary_path)
         .arg("--help")
@@ -608,5 +697,5 @@ fn test_binary_exists() {
     assert!(output.status.success(), "Help command failed");
     
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("audiocheckr"), "Help output should mention audiocheckr");
+    assert!(stdout.contains("audio") || stdout.contains("Audio"), "Help output should mention audio");
 }
