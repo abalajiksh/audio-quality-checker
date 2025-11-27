@@ -2,64 +2,65 @@ pipeline {
     agent any
     
     environment {
-        // MinIO configuration - will be loaded from Jenkins credentials
+        // MinIO configuration
         MINIO_BUCKET = 'audiocheckr'
-        MINIO_FILE = 'TestFiles.zip'
+        // Different test files for different test types
+        MINIO_FILE_COMPACT = 'CompactTestFiles.zip'  // ~500MB for qualification
+        MINIO_FILE_FULL = 'TestFiles.zip'            // ~8.5GB for regression
         
         // SonarQube configuration
         SONAR_PROJECT_KEY = 'audiocheckr'
         SONAR_PROJECT_NAME = 'AudioCheckr'
         SONAR_SOURCES = 'src'
         
-        // Add user bin and cargo to PATH
+        // Path setup
         PATH = "$HOME/bin:$HOME/.cargo/bin:/usr/bin:$PATH"
     }
     
     triggers {
-        // Weekly regression test - Mondays at 2 AM, only if changes exist
+        // Weekly regression test - Mondays at 2 AM
         pollSCM('H 2 * * 1')
     }
     
     stages {
         stage('Setup Tools') {
-    steps {
-        sh '''
-            # Create user bin directory if it doesn't exist
-            mkdir -p $HOME/bin
-            
-            # Verify build tools are installed (POSIX-compliant check)
-            if ! command -v cc >/dev/null 2>&1; then
-                echo "ERROR: C compiler not found!"
-                echo "Please run on Jenkins server:"
-                echo "  apt update && apt install -y build-essential pkg-config libssl-dev"
-                exit 1
-            fi
-            
-            # Install MinIO client if not present
-            if ! command -v mc >/dev/null 2>&1; then
-                echo "Installing MinIO client..."
-                wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O $HOME/bin/mc
-                chmod +x $HOME/bin/mc
-            fi
-            
-            # Install Rust if not present
-            if ! command -v cargo >/dev/null 2>&1; then
-                echo "Installing Rust..."
-                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-                . $HOME/.cargo/env
-            fi
-            
-            # Verify installations
-            echo "=== Tool Versions ==="
-            mc --version
-            cargo --version
-            rustc --version
-            cc --version
-            echo "===================="
-        '''
-    }
-}
-
+            steps {
+                sh '''
+                    # Create user bin directory if it doesn't exist
+                    mkdir -p $HOME/bin
+                    
+                    # Verify build tools are installed
+                    if ! command -v cc >/dev/null 2>&1; then
+                        echo "ERROR: C compiler not found!"
+                        echo "Please run on Jenkins server:"
+                        echo "  apt update && apt install -y build-essential pkg-config libssl-dev"
+                        exit 1
+                    fi
+                    
+                    # Install MinIO client if not present
+                    if ! command -v mc >/dev/null 2>&1; then
+                        echo "Installing MinIO client..."
+                        wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O $HOME/bin/mc
+                        chmod +x $HOME/bin/mc
+                    fi
+                    
+                    # Install Rust if not present
+                    if ! command -v cargo >/dev/null 2>&1; then
+                        echo "Installing Rust..."
+                        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+                        . $HOME/.cargo/env
+                    fi
+                    
+                    # Verify installations
+                    echo "=== Tool Versions ==="
+                    mc --version
+                    cargo --version
+                    rustc --version
+                    cc --version
+                    echo "===================="
+                '''
+            }
+        }
         
         stage('Checkout') {
             steps {
@@ -73,14 +74,24 @@ pipeline {
                         script: 'git diff --name-only HEAD~1 HEAD | wc -l',
                         returnStdout: true
                     ).trim()
+                    
+                    // Determine test type based on trigger
+                    if (currentBuild.getBuildCauses('hudson.triggers.SCMTrigger$SCMTriggerCause')) {
+                        env.TEST_TYPE = 'REGRESSION'
+                    } else {
+                        env.TEST_TYPE = 'QUALIFICATION'
+                    }
+                    echo "Test type: ${env.TEST_TYPE}"
                 }
             }
         }
         
-        stage('Download Test Files from MinIO') {
+        stage('Download Compact Test Files') {
+            when {
+                environment name: 'TEST_TYPE', value: 'QUALIFICATION'
+            }
             steps {
                 script {
-                    // Load MinIO credentials from Jenkins
                     withCredentials([
                         usernamePassword(
                             credentialsId: 'noIdea',
@@ -96,16 +107,61 @@ pipeline {
                             # Configure MinIO client
                             mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
                             
-                            # Download test files
-                            echo "Downloading ${MINIO_FILE} from MinIO..."
-                            mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE} .
+                            # Download compact test files for qualification
+                            echo "=========================================="
+                            echo "Downloading COMPACT test files (~500MB)"
+                            echo "=========================================="
+                            mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE_COMPACT} .
                             
-                            # Extract to project root
-                            echo "Extracting test files..."
-                            unzip -q -o ${MINIO_FILE}
+                            # Extract
+                            echo "Extracting compact test files..."
+                            unzip -q -o ${MINIO_FILE_COMPACT}
                             
-                            # Verify extraction
-                            ls -lh TestFiles/ | head -n 10
+                            # Verify
+                            echo "Compact test files:"
+                            find CompactTestFiles -type f -name "*.flac" | wc -l
+                            du -sh CompactTestFiles
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Download Full Test Files') {
+            when {
+                environment name: 'TEST_TYPE', value: 'REGRESSION'
+            }
+            steps {
+                script {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'noIdea',
+                            usernameVariable: 'MINIO_ACCESS_KEY',
+                            passwordVariable: 'MINIO_SECRET_KEY'
+                        ),
+                        string(
+                            credentialsId: 'minio-endpoint',
+                            variable: 'MINIO_ENDPOINT'
+                        )
+                    ]) {
+                        sh '''
+                            # Configure MinIO client
+                            mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+                            
+                            # Download full test files for regression
+                            echo "=========================================="
+                            echo "Downloading FULL test files (~8.5GB)"
+                            echo "=========================================="
+                            mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE_FULL} .
+                            
+                            # Extract
+                            echo "Extracting full test files..."
+                            unzip -q -o ${MINIO_FILE_FULL}
+                            
+                            # Verify
+                            echo "Full test files:"
+                            find TestFiles -type f -name "*.flac" | wc -l
+                            du -sh TestFiles
                         '''
                     }
                 }
@@ -116,11 +172,8 @@ pipeline {
             steps {
                 sh '''
                     echo "Building Rust project..."
-                    
-                    # Build release binary
                     cargo build --release
                     
-                    # Verify binary exists and show info
                     echo "=== Build Artifact ==="
                     ls -lh target/release/audiocheckr
                     file target/release/audiocheckr
@@ -132,10 +185,8 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 script {
-                    // SonarQube scanner tool configured in Jenkins Global Tool Configuration
                     def scannerHome = tool 'SonarQube-LXC'
                     
-                    // withSonarQubeEnv uses the SonarQube server configured in Jenkins System Configuration
                     withSonarQubeEnv('slxc') {
                         sh """
                             ${scannerHome}/bin/sonar-scanner \
@@ -143,7 +194,7 @@ pipeline {
                                 -Dsonar.projectName=${SONAR_PROJECT_NAME} \
                                 -Dsonar.sources=${SONAR_SOURCES} \
                                 -Dsonar.rust.clippy.reportPaths=target/clippy-report.json \
-                                -Dsonar.exclusions=**/target/**,**/TestFiles/**
+                                -Dsonar.exclusions=**/target/**,**/TestFiles/**,**/CompactTestFiles/**
                         """
                     }
                 }
@@ -158,31 +209,27 @@ pipeline {
             }
         }
         
-        stage('Validation Test - Quick') {
+        stage('Qualification Test') {
             when {
-                anyOf {
-                    triggeredBy 'GitHubPushCause'
-                    triggeredBy 'UserIdCause'
-                    branch 'main'
-                }
+                environment name: 'TEST_TYPE', value: 'QUALIFICATION'
             }
             steps {
                 sh '''
                     echo "=========================================="
-                    echo "Running validation tests (22 files)..."
+                    echo "Running QUALIFICATION tests (20 files)"
+                    echo "Uses: CompactTestFiles (~500MB)"
                     echo "=========================================="
-                    cargo test --test validation_test -- --nocapture
+                    cargo test --test qualification_test -- --nocapture
                 '''
             }
         }
         
         stage('Determine Regression Necessity') {
             when {
-                triggeredBy 'SCMTrigger'
+                environment name: 'TEST_TYPE', value: 'REGRESSION'
             }
             steps {
                 script {
-                    // Check if changes are significant
                     def significantChange = sh(
                         script: '''
                             # Check if src/ or tests/ directories changed
@@ -202,19 +249,20 @@ pipeline {
             }
         }
         
-        stage('Regression Test - Full') {
+        stage('Regression Test') {
             when {
                 allOf {
-                    triggeredBy 'SCMTrigger'
+                    environment name: 'TEST_TYPE', value: 'REGRESSION'
                     environment name: 'RUN_REGRESSION', value: 'true'
                 }
             }
             steps {
                 sh '''
                     echo "=========================================="
-                    echo "Running full regression tests (82 files)..."
+                    echo "Running REGRESSION tests (80+ files)"
+                    echo "Uses: TestFiles (~8.5GB)"
                     echo "=========================================="
-                    cargo test --test regression_test_ground_truth -- --nocapture
+                    cargo test --test regression_test -- --nocapture
                 '''
             }
         }
@@ -229,13 +277,13 @@ pipeline {
             echo '❌ Build or tests failed. Check logs for details.'
         }
         always {
-            // Clean up test files to save space
             sh '''
-                rm -f TestFiles.zip
+                # Clean up test files to save space
+                rm -f CompactTestFiles.zip TestFiles.zip
+                rm -rf CompactTestFiles TestFiles
                 echo "Workspace cleaned"
             '''
             
-            // Publish test results if available
             junit allowEmptyResults: true, testResults: 'target/**/test-results/*.xml'
         }
     }

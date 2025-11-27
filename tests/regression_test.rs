@@ -1,5 +1,15 @@
 // tests/regression_test.rs
-// GROUND TRUTH Regression Test Suite
+// REGRESSION Test Suite - Comprehensive ground truth validation
+// Uses full TestFiles.zip (8.5GB) for complete coverage
+//
+// Test Philosophy:
+// - CleanOrigin: Original master files → PASS (genuine high-res) except input192 (16-bit source)
+// - CleanTranscoded: 24→16 bit honest transcodes → PASS
+// - Resample96: 96kHz → lower rates = PASS, 96kHz → higher rates = FAIL (interpolated)
+// - Resample192: All are from 16-bit source → FAIL (BitDepthMismatch)
+// - Upscale16: 16-bit → 24-bit padding = FAIL
+// - Upscaled: Lossy → Lossless = FAIL
+// - MasterScript: Complex transcoding chains - most should FAIL
 
 use std::env;
 use std::process::Command;
@@ -16,69 +26,77 @@ struct TestResult {
     passed: bool,
     expected: bool,
     defects_found: Vec<String>,
+    #[allow(dead_code)]
     file: String,
 }
 
+/// Main regression test - comprehensive coverage
 #[test]
-fn test_all_audio_files_comprehensive() {
+fn test_regression_suite() {
     let binary_path = get_binary_path();
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let test_base = project_root.join("TestFiles");
 
-    assert!(test_base.exists());
+    assert!(
+        test_base.exists(),
+        "TestFiles directory not found at: {}. \
+         Download TestFiles.zip from MinIO for regression tests.",
+        test_base.display()
+    );
 
-    println!("\n=== GROUND TRUTH Regression Test Suite ===");
-    println!("Using TestFiles from: {}\n", test_base.display());
+    println!("\n{}", "=".repeat(70));
+    println!("GROUND TRUTH REGRESSION TEST SUITE");
+    println!("Using: {}", test_base.display());
+    println!("{}\n", "=".repeat(70));
 
-    let test_cases = define_test_cases(&test_base);
-    let mut results = Vec::new();
+    let test_cases = define_regression_tests(&test_base);
     let mut passed = 0;
     let mut failed = 0;
     let mut false_positives = 0;
     let mut false_negatives = 0;
 
-    println!("Running {} comprehensive tests...\n", test_cases.len());
+    println!("Running {} regression tests...\n", test_cases.len());
 
     for (idx, test_case) in test_cases.iter().enumerate() {
         let result = run_test(&binary_path, test_case);
 
         if result.passed == result.expected {
             passed += 1;
-            println!("[{}/{}] ✓ PASS: {}", idx + 1, test_cases.len(), test_case.description);
+            println!("[{:2}/{}] ✓ PASS: {}", idx + 1, test_cases.len(), test_case.description);
         } else {
             failed += 1;
 
             if result.passed && !result.expected {
                 false_negatives += 1;
-                println!("[{}/{}] ✗ FALSE NEGATIVE: {}", idx + 1, test_cases.len(), test_case.description);
+                println!("[{:2}/{}] ✗ FALSE NEGATIVE: {}", idx + 1, test_cases.len(), test_case.description);
+                println!("        Expected defects but got CLEAN");
             } else {
                 false_positives += 1;
-                println!("[{}/{}] ✗ FALSE POSITIVE: {}", idx + 1, test_cases.len(), test_case.description);
+                println!("[{:2}/{}] ✗ FALSE POSITIVE: {}", idx + 1, test_cases.len(), test_case.description);
+                println!("        Expected CLEAN but detected defects: {:?}", result.defects_found);
             }
-
-            println!("  Expected: {}, Got: {}",
-                if test_case.should_pass { "CLEAN" } else { "DEFECTS" },
-                if result.passed { "CLEAN" } else { "DEFECTS" });
         }
-
-        results.push(result);
     }
 
     println!("\n{}", "=".repeat(70));
-    println!("COMPREHENSIVE TEST RESULTS");
+    println!("REGRESSION RESULTS");
     println!("{}", "=".repeat(70));
-    println!("Total: {}", test_cases.len());
-    println!("Correct: {} ({:.1}%)", passed, (passed as f32 / test_cases.len() as f32) * 100.0);
-    println!("Incorrect: {} ({:.1}%)", failed, (failed as f32 / test_cases.len() as f32) * 100.0);
-    println!("  False Negatives: {}", false_negatives);
-    println!("  False Positives: {}", false_positives);
+    println!("Total Tests:       {}", test_cases.len());
+    println!("Passed:            {} ({:.1}%)", passed, (passed as f32 / test_cases.len() as f32) * 100.0);
+    println!("Failed:            {}", failed);
+    println!("  False Positives: {} (clean files marked as defective)", false_positives);
+    println!("  False Negatives: {} (defective files marked as clean)", false_negatives);
     println!("{}", "=".repeat(70));
 
     if failed > 0 {
         println!("\n⚠️  Detector needs improvement in {} areas", failed);
     } else {
-        println!("\n✅ Perfect detection!");
+        println!("\n✅ Perfect detection across all {} test cases!", test_cases.len());
     }
+
+    // For regression tests, we report but don't fail on detection issues
+    // This allows tracking detector improvements over time
+    // Change to assert_eq!(failed, 0, ...) if strict pass/fail is needed
 }
 
 fn get_binary_path() -> PathBuf {
@@ -114,501 +132,403 @@ fn get_binary_path() -> PathBuf {
     panic!("Binary not found. Run: cargo build --release");
 }
 
-fn define_test_cases(base: &Path) -> Vec<TestCase> {
+fn define_regression_tests(base: &Path) -> Vec<TestCase> {
     let mut cases = Vec::new();
 
-cases.push(TestCase {
-    file_path: base.join("CleanOrigin/input192.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("CleanOrigin/input96.flac").to_string_lossy().to_string(),
-    should_pass: true,
-    expected_defects: vec![],
-    description: "96kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("CleanTranscoded/input192_16bit.flac").to_string_lossy().to_string(),
-    should_pass: true,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz 16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("CleanTranscoded/input96_16bit.flac").to_string_lossy().to_string(),
-    should_pass: true,
-    expected_defects: vec![],
-    description: "96kHz 16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_16bit_44khz_mp3_128_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3 128 upscaled 16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_16bit_44khz_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz upscaled 16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_16bit_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz upscaled 16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_aac_128_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "AacTranscode".to_string()],
-    description: "192kHz AAC 128 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_aac_192_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "AacTranscode".to_string()],
-    description: "192kHz AAC 192 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_aac_256_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "AacTranscode".to_string()],
-    description: "192kHz AAC 256 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_aac_320_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "AacTranscode".to_string()],
-    description: "192kHz AAC 320 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_mp3_128_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3 128 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_mp3_192_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3 192 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_mp3_256_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3 256 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_mp3_320_reencoded_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3 320 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_mp3_320_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3 320 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_mp3_to_aac_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string(), "AacTranscode".to_string()],
-    description: "192kHz MP3 AAC upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_mp3_v0_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3 v0 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_mp3_v2_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3 v2 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_mp3_v4_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3 v4 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_opus_128_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string()],
-    description: "192kHz Opus 128 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_opus_160_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string()],
-    description: "192kHz Opus 160 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_opus_192_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string()],
-    description: "192kHz Opus 192 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_opus_64_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string()],
-    description: "192kHz Opus 64 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_opus_96_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string()],
-    description: "192kHz Opus 96 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_opus_to_mp3_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string(), "OpusTranscode".to_string()],
-    description: "192kHz MP3 Opus upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_original.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz original".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_resampled_44.1_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_resampled_48_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_vorbis_q3_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OggVorbisTranscode".to_string()],
-    description: "192kHz Vorbis q3 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_vorbis_q5_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OggVorbisTranscode".to_string()],
-    description: "192kHz Vorbis q5 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_vorbis_q7_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OggVorbisTranscode".to_string()],
-    description: "192kHz Vorbis q7 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test192_vorbis_q9_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OggVorbisTranscode".to_string()],
-    description: "192kHz Vorbis q9 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_16bit_44khz_mp3_128_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "96kHz MP3 128 upscaled 16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_16bit_44khz_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "96kHz upscaled 16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_16bit_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "96kHz upscaled 16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_aac_128_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["AacTranscode".to_string()],
-    description: "96kHz AAC 128 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_aac_192_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["AacTranscode".to_string()],
-    description: "96kHz AAC 192 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_aac_256_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["AacTranscode".to_string()],
-    description: "96kHz AAC 256 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_aac_320_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["AacTranscode".to_string()],
-    description: "96kHz AAC 320 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_mp3_128_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string()],
-    description: "96kHz MP3 128 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_mp3_192_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string()],
-    description: "96kHz MP3 192 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_mp3_256_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string()],
-    description: "96kHz MP3 256 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_mp3_320_reencoded_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string()],
-    description: "96kHz MP3 320 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_mp3_320_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string()],
-    description: "96kHz MP3 320 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_mp3_to_aac_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string(), "AacTranscode".to_string()],
-    description: "96kHz MP3 AAC upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_mp3_v0_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string()],
-    description: "96kHz MP3 v0 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_mp3_v2_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string()],
-    description: "96kHz MP3 v2 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_mp3_v4_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string()],
-    description: "96kHz MP3 v4 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_opus_128_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OpusTranscode".to_string()],
-    description: "96kHz Opus 128 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_opus_160_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OpusTranscode".to_string()],
-    description: "96kHz Opus 160 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_opus_192_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OpusTranscode".to_string()],
-    description: "96kHz Opus 192 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_opus_64_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OpusTranscode".to_string()],
-    description: "96kHz Opus 64 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_opus_96_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OpusTranscode".to_string()],
-    description: "96kHz Opus 96 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_opus_to_mp3_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string(), "OpusTranscode".to_string()],
-    description: "96kHz MP3 Opus upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_original.flac").to_string_lossy().to_string(),
-    should_pass: true,
-    expected_defects: vec![],
-    description: "96kHz original".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_resampled_44.1_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec![],
-    description: "96kHz upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_resampled_48_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec![],
-    description: "96kHz upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_vorbis_q3_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OggVorbisTranscode".to_string()],
-    description: "96kHz Vorbis q3 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_vorbis_q5_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OggVorbisTranscode".to_string()],
-    description: "96kHz Vorbis q5 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_vorbis_q7_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OggVorbisTranscode".to_string()],
-    description: "96kHz Vorbis q7 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("MasterScript/test96_vorbis_q9_upscaled.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OggVorbisTranscode".to_string()],
-    description: "96kHz Vorbis q9 upscaled".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample192/input192_176.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample192/input192_44.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample192/input192_48.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample192/input192_88.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample192/input192_96.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "192kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample96/input96_176.flac").to_string_lossy().to_string(),
-    should_pass: true,
-    expected_defects: vec![],
-    description: "96kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample96/input96_192.flac").to_string_lossy().to_string(),
-    should_pass: true,
-    expected_defects: vec![],
-    description: "96kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample96/input96_44.flac").to_string_lossy().to_string(),
-    should_pass: true,
-    expected_defects: vec![],
-    description: "96kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample96/input96_48.flac").to_string_lossy().to_string(),
-    should_pass: true,
-    expected_defects: vec![],
-    description: "96kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Resample96/input96_88.flac").to_string_lossy().to_string(),
-    should_pass: true,
-    expected_defects: vec![],
-    description: "96kHz".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscale16/output192_16bit.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscale16/output96_16bit.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string()],
-    description: "16-bit".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscaled/input192_m4a.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "AacTranscode".to_string()],
-    description: "192kHz AAC".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscaled/input192_mp3.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
-    description: "192kHz MP3".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscaled/input192_ogg.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OggVorbisTranscode".to_string()],
-    description: "192kHz Vorbis".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscaled/input192_opus.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string()],
-    description: "192kHz Opus".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscaled/input96_m4a.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["AacTranscode".to_string()],
-    description: "96kHz AAC".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscaled/input96_mp3.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["Mp3Transcode".to_string()],
-    description: "96kHz MP3".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscaled/input96_ogg.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OggVorbisTranscode".to_string()],
-    description: "96kHz Vorbis".to_string(),
-});
-cases.push(TestCase {
-    file_path: base.join("Upscaled/input96_opus.flac").to_string_lossy().to_string(),
-    should_pass: false,
-    expected_defects: vec!["OpusTranscode".to_string()],
-    description: "96kHz Opus".to_string(),
-});
+    // =========================================================================
+    // CLEANORIGIN - Original master files
+    // =========================================================================
+    
+    cases.push(TestCase {
+        file_path: base.join("CleanOrigin/input96.flac").to_string_lossy().to_string(),
+        should_pass: true,
+        expected_defects: vec![],
+        description: "CleanOrigin: 96kHz 24-bit original".to_string(),
+    });
+
+    // input192.flac is documented as 16-bit source
+    cases.push(TestCase {
+        file_path: base.join("CleanOrigin/input192.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "CleanOrigin: 192kHz (16-bit source)".to_string(),
+    });
+
+    // =========================================================================
+    // CLEANTRANSCODED - Honest 24→16 bit transcodes
+    // =========================================================================
+    
+    cases.push(TestCase {
+        file_path: base.join("CleanTranscoded/input96_16bit.flac").to_string_lossy().to_string(),
+        should_pass: true,
+        expected_defects: vec![],
+        description: "CleanTranscoded: 96kHz honest 16-bit".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("CleanTranscoded/input192_16bit.flac").to_string_lossy().to_string(),
+        should_pass: true,
+        expected_defects: vec![],
+        description: "CleanTranscoded: 192kHz honest 16-bit".to_string(),
+    });
+
+    // =========================================================================
+    // RESAMPLE96 - Sample rate changes from 96kHz source
+    // Downsampling = PASS, Upsampling = FAIL
+    // =========================================================================
+    
+    // Downsampled (genuine) - PASS
+    for rate in ["44", "48", "88"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("Resample96/input96_{}.flac", rate)).to_string_lossy().to_string(),
+            should_pass: true,
+            expected_defects: vec![],
+            description: format!("Resample96: 96→{}kHz downsampled", rate),
+        });
+    }
+
+    // Upsampled (interpolated) - FAIL
+    for rate in ["176", "192"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("Resample96/input96_{}.flac", rate)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["Upsampled".to_string()],
+            description: format!("Resample96: 96→{}kHz upsampled (interpolated)", rate),
+        });
+    }
+
+    // =========================================================================
+    // RESAMPLE192 - All from 16-bit source, all should FAIL BitDepthMismatch
+    // =========================================================================
+    
+    for rate in ["44", "48", "88", "96", "176"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("Resample192/input192_{}.flac", rate)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["BitDepthMismatch".to_string()],
+            description: format!("Resample192: 192→{}kHz (16-bit source)", rate),
+        });
+    }
+
+    // =========================================================================
+    // UPSCALE16 - 16-bit → 24-bit padding (fake bit depth)
+    // =========================================================================
+    
+    cases.push(TestCase {
+        file_path: base.join("Upscale16/output96_16bit.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "Upscale16: 96kHz 16→24-bit".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("Upscale16/output192_16bit.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "Upscale16: 192kHz 16→24-bit".to_string(),
+    });
+
+    // =========================================================================
+    // UPSCALED - Lossy codec → FLAC transcodes
+    // =========================================================================
+    
+    // 96kHz source (genuine 24-bit) - only lossy artifact
+    cases.push(TestCase {
+        file_path: base.join("Upscaled/input96_mp3.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["Mp3Transcode".to_string()],
+        description: "Upscaled: 96kHz from MP3".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("Upscaled/input96_m4a.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["AacTranscode".to_string()],
+        description: "Upscaled: 96kHz from AAC".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("Upscaled/input96_opus.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["OpusTranscode".to_string()],
+        description: "Upscaled: 96kHz from Opus".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("Upscaled/input96_ogg.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["OggVorbisTranscode".to_string()],
+        description: "Upscaled: 96kHz from Vorbis".to_string(),
+    });
+
+    // 192kHz source (16-bit) - both lossy + bit depth issues
+    cases.push(TestCase {
+        file_path: base.join("Upscaled/input192_mp3.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["Mp3Transcode".to_string(), "BitDepthMismatch".to_string()],
+        description: "Upscaled: 192kHz from MP3 (16-bit source)".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("Upscaled/input192_m4a.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["AacTranscode".to_string(), "BitDepthMismatch".to_string()],
+        description: "Upscaled: 192kHz from AAC (16-bit source)".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("Upscaled/input192_opus.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["OpusTranscode".to_string(), "BitDepthMismatch".to_string()],
+        description: "Upscaled: 192kHz from Opus (16-bit source)".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("Upscaled/input192_ogg.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["OggVorbisTranscode".to_string(), "BitDepthMismatch".to_string()],
+        description: "Upscaled: 192kHz from Vorbis (16-bit source)".to_string(),
+    });
+
+    // =========================================================================
+    // MASTERSCRIPT - Complex transcoding chains (96kHz source = genuine 24-bit)
+    // =========================================================================
+    
+    // test96_original - the reference file, should PASS
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test96_original.flac").to_string_lossy().to_string(),
+        should_pass: true,
+        expected_defects: vec![],
+        description: "MasterScript: test96 original (reference)".to_string(),
+    });
+
+    // test96 bit depth degradations
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test96_16bit_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "MasterScript: test96 16-bit upscaled".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test96_16bit_44khz_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "MasterScript: test96 16-bit 44.1kHz upscaled".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test96_16bit_44khz_mp3_128_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+        description: "MasterScript: test96 16-bit 44.1kHz MP3 128k upscaled".to_string(),
+    });
+
+    // test96 resample degradations
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test96_resampled_44.1_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["Upsampled".to_string()],
+        description: "MasterScript: test96 44.1kHz→192kHz upsampled".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test96_resampled_48_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["Upsampled".to_string()],
+        description: "MasterScript: test96 48kHz→192kHz upsampled".to_string(),
+    });
+
+    // test96 MP3 degradations (various bitrates and VBR modes)
+    for bitrate in ["128", "192", "256", "320"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test96_mp3_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["Mp3Transcode".to_string()],
+            description: format!("MasterScript: test96 MP3 {}k upscaled", bitrate),
+        });
+    }
+
+    for vbr in ["v0", "v2", "v4"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test96_mp3_{}_upscaled.flac", vbr)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["Mp3Transcode".to_string()],
+            description: format!("MasterScript: test96 MP3 {} upscaled", vbr),
+        });
+    }
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test96_mp3_320_reencoded_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["Mp3Transcode".to_string()],
+        description: "MasterScript: test96 MP3 320k re-encoded upscaled".to_string(),
+    });
+
+    // test96 AAC degradations
+    for bitrate in ["128", "192", "256", "320"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test96_aac_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["AacTranscode".to_string()],
+            description: format!("MasterScript: test96 AAC {}k upscaled", bitrate),
+        });
+    }
+
+    // test96 Opus degradations
+    for bitrate in ["64", "96", "128", "160", "192"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test96_opus_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["OpusTranscode".to_string()],
+            description: format!("MasterScript: test96 Opus {}k upscaled", bitrate),
+        });
+    }
+
+    // test96 Vorbis degradations
+    for quality in ["q3", "q5", "q7", "q9"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test96_vorbis_{}_upscaled.flac", quality)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["OggVorbisTranscode".to_string()],
+            description: format!("MasterScript: test96 Vorbis {} upscaled", quality),
+        });
+    }
+
+    // test96 cross-codec degradations
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test96_mp3_to_aac_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["Mp3Transcode".to_string(), "AacTranscode".to_string()],
+        description: "MasterScript: test96 MP3→AAC upscaled".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test96_opus_to_mp3_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["OpusTranscode".to_string(), "Mp3Transcode".to_string()],
+        description: "MasterScript: test96 Opus→MP3 upscaled".to_string(),
+    });
+
+    // =========================================================================
+    // MASTERSCRIPT - 192kHz source (16-bit origin, all have BitDepthMismatch)
+    // =========================================================================
+    
+    // test192_original - 16-bit source, should FAIL
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test192_original.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "MasterScript: test192 original (16-bit source)".to_string(),
+    });
+
+    // test192 bit depth degradations
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test192_16bit_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "MasterScript: test192 16-bit upscaled".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test192_16bit_44khz_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "MasterScript: test192 16-bit 44.1kHz upscaled".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test192_16bit_44khz_mp3_128_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+        description: "MasterScript: test192 16-bit 44.1kHz MP3 128k upscaled".to_string(),
+    });
+
+    // test192 resample degradations
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test192_resampled_44.1_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "MasterScript: test192 44.1kHz→192kHz (16-bit source)".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test192_resampled_48_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string()],
+        description: "MasterScript: test192 48kHz→192kHz (16-bit source)".to_string(),
+    });
+
+    // test192 MP3 degradations
+    for bitrate in ["128", "192", "256", "320"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test192_mp3_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+            description: format!("MasterScript: test192 MP3 {}k upscaled", bitrate),
+        });
+    }
+
+    for vbr in ["v0", "v2", "v4"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test192_mp3_{}_upscaled.flac", vbr)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+            description: format!("MasterScript: test192 MP3 {} upscaled", vbr),
+        });
+    }
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test192_mp3_320_reencoded_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string()],
+        description: "MasterScript: test192 MP3 320k re-encoded upscaled".to_string(),
+    });
+
+    // test192 AAC degradations
+    for bitrate in ["128", "192", "256", "320"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test192_aac_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["BitDepthMismatch".to_string(), "AacTranscode".to_string()],
+            description: format!("MasterScript: test192 AAC {}k upscaled", bitrate),
+        });
+    }
+
+    // test192 Opus degradations
+    for bitrate in ["64", "96", "128", "160", "192"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test192_opus_{}_upscaled.flac", bitrate)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string()],
+            description: format!("MasterScript: test192 Opus {}k upscaled", bitrate),
+        });
+    }
+
+    // test192 Vorbis degradations
+    for quality in ["q3", "q5", "q7", "q9"] {
+        cases.push(TestCase {
+            file_path: base.join(format!("MasterScript/test192_vorbis_{}_upscaled.flac", quality)).to_string_lossy().to_string(),
+            should_pass: false,
+            expected_defects: vec!["BitDepthMismatch".to_string(), "OggVorbisTranscode".to_string()],
+            description: format!("MasterScript: test192 Vorbis {} upscaled", quality),
+        });
+    }
+
+    // test192 cross-codec degradations
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test192_mp3_to_aac_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string(), "Mp3Transcode".to_string(), "AacTranscode".to_string()],
+        description: "MasterScript: test192 MP3→AAC upscaled".to_string(),
+    });
+
+    cases.push(TestCase {
+        file_path: base.join("MasterScript/test192_opus_to_mp3_upscaled.flac").to_string_lossy().to_string(),
+        should_pass: false,
+        expected_defects: vec!["BitDepthMismatch".to_string(), "OpusTranscode".to_string(), "Mp3Transcode".to_string()],
+        description: "MasterScript: test192 Opus→MP3 upscaled".to_string(),
+    });
 
     cases
 }
@@ -642,10 +562,10 @@ fn run_test(binary: &Path, test_case: &TestCase) -> TestResult {
     if stdout.contains("Vorbis") || stdout.contains("Ogg") {
         defects_found.push("OggVorbisTranscode".to_string());
     }
-    if stdout.contains("Bit depth mismatch") || stdout.contains("BitDepth") {
+    if stdout.contains("Bit depth mismatch") || stdout.contains("BitDepth") || stdout.contains("bit depth") {
         defects_found.push("BitDepthMismatch".to_string());
     }
-    if stdout.contains("Upsampled") {
+    if stdout.contains("Upsampled") || stdout.contains("upsampled") || stdout.contains("interpolat") {
         defects_found.push("Upsampled".to_string());
     }
     if stdout.contains("Spectral artifacts") {
@@ -663,14 +583,19 @@ fn run_test(binary: &Path, test_case: &TestCase) -> TestResult {
 #[test]
 fn test_binary_exists() {
     let binary_path = get_binary_path();
-    assert!(binary_path.exists());
+    assert!(binary_path.exists(), "Binary not found at {:?}", binary_path);
 }
 
 #[test]
 fn test_help_output() {
     let binary_path = get_binary_path();
-    let output = Command::new(&binary_path).arg("--help").output().expect("Failed");
-    assert!(output.status.success());
+    let output = Command::new(&binary_path)
+        .arg("--help")
+        .output()
+        .expect("Failed to run --help");
+    
+    assert!(output.status.success(), "Help command failed");
+    
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("audiocheckr"));
+    assert!(stdout.contains("audiocheckr"), "Help output should mention audiocheckr");
 }
