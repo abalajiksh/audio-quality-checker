@@ -4,7 +4,7 @@
 // and analyzing stereo image characteristics.
 
 use crate::decoder::{AudioData, extract_stereo, compute_mid_side};
-use crate::dsp::{FftProcessor, WindowType, amplitude_to_db, rms};
+use crate::dsp::{FftProcessor, WindowType, rms};
 
 /// Stereo analysis result
 #[derive(Debug, Clone)]

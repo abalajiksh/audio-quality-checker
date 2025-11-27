@@ -4,10 +4,7 @@
 // Pre-echo is a characteristic artifact of transform-based lossy codecs (MP3, AAC, etc.)
 
 use crate::decoder::AudioData;
-use crate::dsp::{
-    compute_envelope, find_transients, amplitude_to_db, rms,
-    FftProcessor, WindowType,
-};
+use crate::dsp::{find_transients, amplitude_to_db, rms};
 
 /// Pre-echo analysis result
 #[derive(Debug, Clone)]

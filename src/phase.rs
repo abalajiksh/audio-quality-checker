@@ -5,7 +5,6 @@
 
 use crate::decoder::AudioData;
 use crate::dsp::{FftProcessor, WindowType};
-use rustfft::num_complex::Complex;
 use std::f32::consts::PI;
 
 /// Phase analysis result

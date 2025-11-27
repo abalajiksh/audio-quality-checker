@@ -49,14 +49,17 @@ pub fn decode_audio(path: &Path) -> Result<AudioData> {
     let meta_opts = MetadataOptions::default();
     let fmt_opts = FormatOptions::default();
 
-    let probed = symphonia::default::get_probe()
+    let mut probed = symphonia::default::get_probe()
         .format(&hint, mss, &fmt_opts, &meta_opts)
         .context("Failed to probe file format - may be corrupted or unsupported")?;
 
-    let format_name = format!("{:?}", probed.format.metadata());
-    let mut format = probed.format;
+    // Get format name from metadata (if available)
+    let format_name = probed.format.metadata()
+        .current()
+        .map(|m| format!("{:?}", m))
+        .unwrap_or_else(|| "Unknown".to_string());
     
-    let track = format
+    let track = probed.format
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
@@ -103,7 +106,7 @@ pub fn decode_audio(path: &Path) -> Result<AudioData> {
     }
 
     loop {
-        let packet = match format.next_packet() {
+        let packet = match probed.format.next_packet() {
             Ok(packet) => packet,
             Err(symphonia::core::errors::Error::IoError(ref e)) 
                 if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -160,33 +163,38 @@ pub fn decode_audio(path: &Path) -> Result<AudioData> {
 
 /// Infer bit depth from codec type
 fn infer_bit_depth_from_codec(params: &symphonia::core::codecs::CodecParameters) -> u32 {
-    use symphonia::core::codecs::CodecType;
+    // Use string matching on codec name since CodecType variants may change between versions
+    let codec_str = format!("{:?}", params.codec).to_uppercase();
     
-    match params.codec {
-        // Lossless codecs - typically 16 or 24 bit
-        codec if codec == CodecType::FLAC => 16,  // Conservative default
-        codec if codec == CodecType::ALAC => 16,
-        codec if codec == CodecType::WAVPACK => 16,
-        
-        // PCM variants
-        codec if codec == CodecType::PCM_S16LE => 16,
-        codec if codec == CodecType::PCM_S16BE => 16,
-        codec if codec == CodecType::PCM_S24LE => 24,
-        codec if codec == CodecType::PCM_S24BE => 24,
-        codec if codec == CodecType::PCM_S32LE => 32,
-        codec if codec == CodecType::PCM_S32BE => 32,
-        codec if codec == CodecType::PCM_F32LE => 32,
-        codec if codec == CodecType::PCM_F32BE => 32,
-        
-        // Lossy codecs - output as floating point, but source was limited
-        codec if codec == CodecType::MP3 => 16,
-        codec if codec == CodecType::AAC => 16,
-        codec if codec == CodecType::VORBIS => 16,
-        codec if codec == CodecType::OPUS => 16,
-        
-        // Default
-        _ => 16,
+    // PCM variants
+    if codec_str.contains("PCM") {
+        if codec_str.contains("S16") || codec_str.contains("U16") {
+            return 16;
+        }
+        if codec_str.contains("S24") || codec_str.contains("U24") {
+            return 24;
+        }
+        if codec_str.contains("S32") || codec_str.contains("U32") || codec_str.contains("F32") {
+            return 32;
+        }
+        if codec_str.contains("F64") || codec_str.contains("S64") {
+            return 64;
+        }
     }
+    
+    // Lossless codecs - typically 16 or 24 bit
+    if codec_str.contains("FLAC") || codec_str.contains("ALAC") || codec_str.contains("WAVPACK") {
+        return 16;  // Conservative default
+    }
+    
+    // Lossy codecs - output as floating point, but source was limited
+    if codec_str.contains("MP3") || codec_str.contains("AAC") || 
+       codec_str.contains("VORBIS") || codec_str.contains("OPUS") {
+        return 16;
+    }
+    
+    // Default
+    16
 }
 
 /// Extract mono channel from interleaved audio

@@ -8,7 +8,7 @@
 use crate::decoder::AudioData;
 use crate::dsp::{
     FftProcessor, WindowType, upsample_sinc, downsample_simple,
-    amplitude_to_db, peak_amplitude, rms,
+    amplitude_to_db, peak_amplitude,
 };
 use crate::spectral::SpectralAnalysis;
 
@@ -140,7 +140,7 @@ fn detect_upsampling_spectral(
     spectral: &SpectralAnalysis,
 ) -> (bool, Option<u32>, f32) {
     let cutoff = spectral.frequency_cutoff;
-    let nyquist = audio.sample_rate as f32 / 2.0;
+    let _nyquist = audio.sample_rate as f32 / 2.0;
     
     // Check if cutoff matches a lower sample rate's Nyquist
     for &(original, upsampled) in SAMPLE_RATE_PAIRS {
@@ -252,6 +252,9 @@ fn calculate_spectral_similarity(
     if similarities.is_empty() {
         return 0.0;
     }
+    
+    // Mark sample_rate as intentionally unused (kept for API consistency)
+    let _ = sample_rate;
     
     similarities.iter().sum::<f32>() / similarities.len() as f32
 }

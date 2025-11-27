@@ -4,7 +4,7 @@
 // Useful for codec signature detection and audio fingerprinting.
 
 use crate::decoder::AudioData;
-use crate::dsp::{FftProcessor, WindowType, amplitude_to_db};
+use crate::dsp::{FftProcessor, WindowType};
 use std::f32::consts::PI;
 
 /// MFCC analysis result

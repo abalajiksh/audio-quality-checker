@@ -5,8 +5,7 @@
 
 use crate::dsp::{
     FftProcessor, WindowType, moving_average, median, amplitude_to_db,
-    spectral_flatness, spectral_rolloff, spectral_centroid, spectral_spread,
-    spectral_flux, spectral_contrast,
+    spectral_flatness, spectral_rolloff, spectral_centroid,
 };
 use crate::decoder::AudioData;
 use anyhow::Result;

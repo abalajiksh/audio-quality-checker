@@ -8,11 +8,10 @@ use crate::decoder::AudioData;
 use crate::spectral::{SpectralAnalyzer, SpectralAnalysis, match_signature};
 use crate::bit_depth::{analyze_bit_depth, BitDepthAnalysis};
 use crate::stereo::{analyze_stereo, StereoAnalysis};
-use crate::transients::{analyze_pre_echo, analyze_frame_boundaries, PreEchoAnalysis, FrameBoundaryAnalysis};
+use crate::transients::{analyze_pre_echo, PreEchoAnalysis};
 use crate::phase::{analyze_phase, PhaseAnalysis};
 use crate::upsampling::{analyze_upsampling, UpsamplingAnalysis};
 use crate::true_peak::{analyze_true_peak, TruePeakAnalysis};
-use crate::mfcc::{analyze_mfcc, MfccAnalysis};
 
 /// Defect types that can be detected
 #[derive(Debug, Clone)]
