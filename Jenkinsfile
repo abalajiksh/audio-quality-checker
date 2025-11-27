@@ -40,7 +40,7 @@ pipeline {
                 script {
                     // Use the MinIO credentials stored in Jenkins
                     withCredentials([usernamePassword(
-                        credentialsId: 'minio-credentials',
+                        credentialsId: 'noIdea',
                         usernameVariable: 'MINIO_ACCESS_KEY',
                         passwordVariable: 'MINIO_SECRET_KEY'
                     )]) {
@@ -89,7 +89,7 @@ pipeline {
                     
                     // withSonarQubeEnv uses the SonarQube server configured in Jenkins System Configuration
                     // and automatically uses the token stored in Jenkins credentials
-                    withSonarQubeEnv('SonarQube-LXC') {
+                    withSonarQubeEnv('slxc') {
                         sh """
                             ${scannerHome}/bin/sonar-scanner \
                                 -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
