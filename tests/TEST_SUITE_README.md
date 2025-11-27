@@ -9,27 +9,20 @@ This document explains the test file structure and expected detection results fo
 ### Full Test Suite (`TestFiles.zip` - ~8.5GB)
 Used for **Regression Testing** (weekly CI runs)
 
+### Compact Test Suite (`CompactTestFiles.zip` - ~1.5GB)  
+Used for **Qualification Testing** (every push/PR)
+
+Both ZIP files extract to `TestFiles/` folder with this structure:
+
 ```
 TestFiles/
 ├── CleanOrigin/          # Original master recordings
 ├── CleanTranscoded/      # Honest bit-depth reductions (24→16 bit)
 ├── Resample96/           # Sample rate changes from 96kHz source
-├── Resample192/          # Sample rate changes from 192kHz source  
+├── Resample192/          # Sample rate changes from 192kHz source (full only)
 ├── Upscale16/            # 16-bit → 24-bit padding (fake depth)
 ├── Upscaled/             # Lossy codec → FLAC transcodes
-└── MasterScript/         # Complex transcoding chains
-```
-
-### Compact Test Suite (`CompactTestFiles.zip` - ~500MB)
-Used for **Qualification Testing** (every push/PR)
-
-```
-CompactTestFiles/
-├── CleanOrigin/          # 2 files
-├── CleanTranscoded/      # 2 files
-├── Resample96/           # 5 files  
-├── Upscale16/            # 2 files
-└── Upscaled/             # 8 files
+└── MasterScript/         # Complex transcoding chains (full only)
 ```
 
 ## Test Categories & Expected Results

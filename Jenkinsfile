@@ -4,9 +4,9 @@ pipeline {
     environment {
         // MinIO configuration
         MINIO_BUCKET = 'audiocheckr'
-        // Different test files for different test types
-        MINIO_FILE_COMPACT = 'CompactTestFiles.zip'  // ~500MB for qualification
-        MINIO_FILE_FULL = 'TestFiles.zip'            // ~8.5GB for regression
+        // Use CompactTestFiles.zip for qualification, TestFiles.zip for regression
+        MINIO_FILE_COMPACT = 'CompactTestFiles.zip'
+        MINIO_FILE_FULL = 'TestFiles.zip'
         
         // SonarQube configuration
         SONAR_PROJECT_KEY = 'audiocheckr'
@@ -104,23 +104,41 @@ pipeline {
                         )
                     ]) {
                         sh '''
+                            set -e
+                            
                             # Configure MinIO client
                             mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
                             
-                            # Download compact test files for qualification
+                            # Download compact test files
                             echo "=========================================="
-                            echo "Downloading COMPACT test files (~500MB)"
+                            echo "Downloading COMPACT test files"
                             echo "=========================================="
                             mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE_COMPACT} .
                             
-                            # Extract
-                            echo "Extracting compact test files..."
+                            # Extract (Windows ZIPs may have backslash warnings - ignore them)
+                            echo "Extracting test files..."
                             unzip -q -o ${MINIO_FILE_COMPACT}
                             
-                            # Verify
-                            echo "Compact test files:"
-                            find CompactTestFiles -type f -name "*.flac" | wc -l
-                            du -sh CompactTestFiles
+                            # Show what was extracted
+                            echo "Extracted contents:"
+                            ls -la
+                            
+                            # The ZIP might create CompactTestFiles/ - rename to TestFiles for consistency
+                            if [ -d "CompactTestFiles" ]; then
+                                echo "Found CompactTestFiles/, renaming to TestFiles/"
+                                mv CompactTestFiles TestFiles
+                            fi
+                            
+                            # Verify TestFiles exists
+                            if [ -d "TestFiles" ]; then
+                                echo "Test files ready:"
+                                find TestFiles -type f -name "*.flac" | wc -l
+                                du -sh TestFiles
+                            else
+                                echo "ERROR: TestFiles directory not found!"
+                                ls -la
+                                exit 1
+                            fi
                         '''
                     }
                 }
@@ -145,23 +163,31 @@ pipeline {
                         )
                     ]) {
                         sh '''
+                            set -e
+                            
                             # Configure MinIO client
                             mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
                             
-                            # Download full test files for regression
+                            # Download full test files
                             echo "=========================================="
-                            echo "Downloading FULL test files (~8.5GB)"
+                            echo "Downloading FULL test files"
                             echo "=========================================="
                             mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE_FULL} .
                             
                             # Extract
-                            echo "Extracting full test files..."
+                            echo "Extracting test files..."
                             unzip -q -o ${MINIO_FILE_FULL}
                             
                             # Verify
-                            echo "Full test files:"
-                            find TestFiles -type f -name "*.flac" | wc -l
-                            du -sh TestFiles
+                            echo "Test files extracted:"
+                            if [ -d "TestFiles" ]; then
+                                find TestFiles -type f -name "*.flac" | wc -l
+                                du -sh TestFiles
+                            else
+                                echo "ERROR: TestFiles directory not found!"
+                                ls -la
+                                exit 1
+                            fi
                         '''
                     }
                 }
@@ -194,7 +220,7 @@ pipeline {
                                 -Dsonar.projectName=${SONAR_PROJECT_NAME} \
                                 -Dsonar.sources=${SONAR_SOURCES} \
                                 -Dsonar.rust.clippy.reportPaths=target/clippy-report.json \
-                                -Dsonar.exclusions=**/target/**,**/TestFiles/**,**/CompactTestFiles/**
+                                -Dsonar.exclusions=**/target/**,**/TestFiles/**
                         """
                     }
                 }
@@ -217,7 +243,6 @@ pipeline {
                 sh '''
                     echo "=========================================="
                     echo "Running QUALIFICATION tests (20 files)"
-                    echo "Uses: CompactTestFiles (~500MB)"
                     echo "=========================================="
                     cargo test --test qualification_test -- --nocapture
                 '''
@@ -260,7 +285,6 @@ pipeline {
                 sh '''
                     echo "=========================================="
                     echo "Running REGRESSION tests (80+ files)"
-                    echo "Uses: TestFiles (~8.5GB)"
                     echo "=========================================="
                     cargo test --test regression_test -- --nocapture
                 '''

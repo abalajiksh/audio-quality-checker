@@ -1,6 +1,6 @@
 // tests/qualification_test.rs
 // QUALIFICATION Test Suite - Compact subset for CI/CD quick validation
-// Uses CompactTestFiles.zip (~500MB estimated) instead of full TestFiles.zip (8.5GB)
+// Uses a subset of files from TestFiles/ for fast validation on every push
 //
 // Test Philosophy:
 // - CleanOrigin: Original master files → PASS (genuine high-res)
@@ -28,17 +28,17 @@ struct TestResult {
     file: String,
 }
 
-/// Main qualification test - runs against CompactTestFiles subset
+/// Main qualification test - runs against TestFiles subset
 #[test]
 fn test_qualification_suite() {
     let binary_path = get_binary_path();
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let test_base = project_root.join("CompactTestFiles");
+    let test_base = project_root.join("TestFiles");
 
     assert!(
         test_base.exists(),
-        "CompactTestFiles directory not found at: {}. \
-         Download CompactTestFiles.zip from MinIO for qualification tests.",
+        "TestFiles directory not found at: {}. \
+         Download TestFiles.zip from MinIO for qualification tests.",
         test_base.display()
     );
 
