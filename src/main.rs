@@ -272,7 +272,7 @@ fn print_report(report: &QualityReport, verbose: bool) {
             
             if verbose {
                 for evidence in &defect.evidence {
-                    println!("      - {}", evidence.dark_gray());
+                    println!("      - {}", evidence.clone().dark_gray());
                 }
             }
         }
