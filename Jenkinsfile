@@ -2,8 +2,7 @@ pipeline {
     agent any
     
     environment {
-        // MinIO configuration - using Jenkins global credentials
-        MINIO_ENDPOINT = 'http://192.168.178.107:9000'
+        // MinIO configuration - will be loaded from Jenkins credentials
         MINIO_BUCKET = 'audiocheckr'
         MINIO_FILE = 'TestFiles.zip'
         
@@ -13,7 +12,7 @@ pipeline {
         SONAR_SOURCES = 'src'
         
         // Add user bin and cargo to PATH
-        PATH = "$HOME/bin:$HOME/.cargo/bin:$PATH"
+        PATH = "$HOME/bin:$HOME/.cargo/bin:/usr/bin:$PATH"
     }
     
     triggers {
@@ -23,42 +22,43 @@ pipeline {
     
     stages {
         stage('Setup Tools') {
-    steps {
-        sh '''
-            # Create user bin directory if it doesn't exist
-            mkdir -p $HOME/bin
-            
-            # Check and install build-essential (requires root, do once)
-            if ! command -v cc &> /dev/null; then
-                echo "Build tools not found. Installing via apt..."
-                # This will fail if jenkins user doesn't have sudo rights
-                # Better to install manually once
-            fi
-            
-            # Install MinIO client if not present
-            if ! command -v mc &> /dev/null; then
-                echo "Installing MinIO client..."
-                wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O $HOME/bin/mc
-                chmod +x $HOME/bin/mc
-            fi
-            
-            # Install Rust if not present
-            if ! command -v cargo &> /dev/null; then
-                echo "Installing Rust..."
-                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-                # Use dot (.) instead of source for POSIX compatibility
-                . $HOME/.cargo/env
-            fi
-            
-            # Verify installations
-            mc --version
-            cargo --version
-            rustc --version
-            cc --version || echo "WARNING: C compiler not found - build will fail"
-        '''
-    }
-}
-
+            steps {
+                sh '''
+                    # Create user bin directory if it doesn't exist
+                    mkdir -p $HOME/bin
+                    
+                    # Verify build tools are installed
+                    if ! command -v cc &> /dev/null; then
+                        echo "ERROR: C compiler not found!"
+                        echo "Please run on Jenkins server:"
+                        echo "  apt update && apt install -y build-essential pkg-config libssl-dev"
+                        exit 1
+                    fi
+                    
+                    # Install MinIO client if not present
+                    if ! command -v mc &> /dev/null; then
+                        echo "Installing MinIO client..."
+                        wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O $HOME/bin/mc
+                        chmod +x $HOME/bin/mc
+                    fi
+                    
+                    # Install Rust if not present
+                    if ! command -v cargo &> /dev/null; then
+                        echo "Installing Rust..."
+                        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+                        . $HOME/.cargo/env
+                    fi
+                    
+                    # Verify installations
+                    echo "=== Tool Versions ==="
+                    mc --version
+                    cargo --version
+                    rustc --version
+                    cc --version
+                    echo "===================="
+                '''
+            }
+        }
         
         stage('Checkout') {
             steps {
@@ -79,21 +79,32 @@ pipeline {
         stage('Download Test Files from MinIO') {
             steps {
                 script {
-                    // Use the MinIO credentials stored in Jenkins
-                    withCredentials([usernamePassword(
-                        credentialsId: 'noIdea',
-                        usernameVariable: 'MINIO_ACCESS_KEY',
-                        passwordVariable: 'MINIO_SECRET_KEY'
-                    )]) {
+                    // Load MinIO credentials from Jenkins
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'noIdea',
+                            usernameVariable: 'MINIO_ACCESS_KEY',
+                            passwordVariable: 'MINIO_SECRET_KEY'
+                        ),
+                        string(
+                            credentialsId: 'minio-endpoint',
+                            variable: 'MINIO_ENDPOINT'
+                        )
+                    ]) {
                         sh '''
                             # Configure MinIO client
                             mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
                             
                             # Download test files
+                            echo "Downloading ${MINIO_FILE} from MinIO..."
                             mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE} .
                             
                             # Extract to project root
-                            unzip -o ${MINIO_FILE}
+                            echo "Extracting test files..."
+                            unzip -q -o ${MINIO_FILE}
+                            
+                            # Verify extraction
+                            ls -lh TestFiles/ | head -n 10
                         '''
                     }
                 }
@@ -103,11 +114,16 @@ pipeline {
         stage('Build') {
             steps {
                 sh '''
+                    echo "Building Rust project..."
+                    
                     # Build release binary
                     cargo build --release
                     
-                    # Verify binary exists
+                    # Verify binary exists and show info
+                    echo "=== Build Artifact ==="
                     ls -lh target/release/audiocheckr
+                    file target/release/audiocheckr
+                    echo "======================"
                 '''
             }
         }
@@ -119,7 +135,6 @@ pipeline {
                     def scannerHome = tool 'SonarQube-LXC'
                     
                     // withSonarQubeEnv uses the SonarQube server configured in Jenkins System Configuration
-                    // and automatically uses the token stored in Jenkins credentials
                     withSonarQubeEnv('slxc') {
                         sh """
                             ${scannerHome}/bin/sonar-scanner \
@@ -137,7 +152,6 @@ pipeline {
         stage('Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
-                    // Uses SonarQube webhook configured in SonarQube server
                     waitForQualityGate abortPipeline: true
                 }
             }
@@ -153,7 +167,9 @@ pipeline {
             }
             steps {
                 sh '''
-                    echo "Running validation tests (22 representative files)..."
+                    echo "=========================================="
+                    echo "Running validation tests (22 files)..."
+                    echo "=========================================="
                     cargo test --test validation_test -- --nocapture
                 '''
             }
@@ -194,7 +210,9 @@ pipeline {
             }
             steps {
                 sh '''
-                    echo "Running full regression tests (82 files with ground truth)..."
+                    echo "=========================================="
+                    echo "Running full regression tests (82 files)..."
+                    echo "=========================================="
                     cargo test --test regression_test_ground_truth -- --nocapture
                 '''
             }
@@ -203,15 +221,18 @@ pipeline {
     
     post {
         success {
-            echo 'Build and tests completed successfully!'
+            echo '✅ Build and tests completed successfully!'
             archiveArtifacts artifacts: 'target/release/audiocheckr', fingerprint: true
         }
         failure {
-            echo 'Build or tests failed. Check logs for details.'
+            echo '❌ Build or tests failed. Check logs for details.'
         }
         always {
             // Clean up test files to save space
-            sh 'rm -f TestFiles.zip'
+            sh '''
+                rm -f TestFiles.zip
+                echo "Workspace cleaned"
+            '''
             
             // Publish test results if available
             junit allowEmptyResults: true, testResults: 'target/**/test-results/*.xml'
