@@ -58,7 +58,7 @@ fn test_regression_suite() {
     );
 
     println!("\n{}", "=".repeat(70));
-    println!("GROUND TRUTH REGRESSION TEST SUITE (Parallel Execution)");
+    println!("REGRESSION TEST SUITE (Parallel Execution)");
     println!("Using: {}", test_base.display());
     println!("{}\n", "=".repeat(70));
 
