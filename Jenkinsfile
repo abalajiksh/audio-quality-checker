@@ -22,43 +22,44 @@ pipeline {
     
     stages {
         stage('Setup Tools') {
-            steps {
-                sh '''
-                    # Create user bin directory if it doesn't exist
-                    mkdir -p $HOME/bin
-                    
-                    # Verify build tools are installed
-                    if ! command -v cc &> /dev/null; then
-                        echo "ERROR: C compiler not found!"
-                        echo "Please run on Jenkins server:"
-                        echo "  apt update && apt install -y build-essential pkg-config libssl-dev"
-                        exit 1
-                    fi
-                    
-                    # Install MinIO client if not present
-                    if ! command -v mc &> /dev/null; then
-                        echo "Installing MinIO client..."
-                        wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O $HOME/bin/mc
-                        chmod +x $HOME/bin/mc
-                    fi
-                    
-                    # Install Rust if not present
-                    if ! command -v cargo &> /dev/null; then
-                        echo "Installing Rust..."
-                        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-                        . $HOME/.cargo/env
-                    fi
-                    
-                    # Verify installations
-                    echo "=== Tool Versions ==="
-                    mc --version
-                    cargo --version
-                    rustc --version
-                    cc --version
-                    echo "===================="
-                '''
-            }
-        }
+    steps {
+        sh '''
+            # Create user bin directory if it doesn't exist
+            mkdir -p $HOME/bin
+            
+            # Verify build tools are installed (POSIX-compliant check)
+            if ! command -v cc >/dev/null 2>&1; then
+                echo "ERROR: C compiler not found!"
+                echo "Please run on Jenkins server:"
+                echo "  apt update && apt install -y build-essential pkg-config libssl-dev"
+                exit 1
+            fi
+            
+            # Install MinIO client if not present
+            if ! command -v mc >/dev/null 2>&1; then
+                echo "Installing MinIO client..."
+                wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O $HOME/bin/mc
+                chmod +x $HOME/bin/mc
+            fi
+            
+            # Install Rust if not present
+            if ! command -v cargo >/dev/null 2>&1; then
+                echo "Installing Rust..."
+                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+                . $HOME/.cargo/env
+            fi
+            
+            # Verify installations
+            echo "=== Tool Versions ==="
+            mc --version
+            cargo --version
+            rustc --version
+            cc --version
+            echo "===================="
+        '''
+    }
+}
+
         
         stage('Checkout') {
             steps {
