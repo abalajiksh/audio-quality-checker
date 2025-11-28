@@ -1,5 +1,7 @@
 # Test data (private, 8+ GB)
 TestFiles/
+GenreTestSuiteLite/
+TestSuite/
 
 # Build artifacts
 /target/

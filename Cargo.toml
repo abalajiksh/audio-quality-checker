@@ -33,15 +33,3 @@ integration_lib_tests = []  # Enable library integration tests
 lto = true
 codegen-units = 1
 opt-level = 3
-
-[[test]]
-name = "qualification_test"
-path = "tests/qualification_test.rs"
-
-[[test]]
-name = "regression_test"
-path = "tests/regression_test.rs"
-
-[[test]]
-name = "integration_test"
-path = "tests/integration_test.rs"
