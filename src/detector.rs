@@ -498,7 +498,7 @@ fn detect_transcode_from_spectral(
     // CONFIDENCE CALCULATION
     // =========================================================================
     
-    let base_confidence = if is_high_sample_rate {
+    let base_confidence: f32 = if is_high_sample_rate {
         // For high sample rate: confidence based on absolute cutoff + evidence
         if cutoff_hz < 12000.0 {
             0.90
@@ -521,7 +521,7 @@ fn detect_transcode_from_spectral(
     };
     
     // Evidence boost
-    let evidence_boost = 
+    let evidence_boost: f32 = 
         (if spectral.has_brick_wall { 0.15 } else { 0.0 }) +
         (if spectral.rolloff_steepness > 60.0 { 0.10 } else { 0.0 }) +
         (if spectral.has_shelf_pattern { 0.10 } else { 0.0 });
