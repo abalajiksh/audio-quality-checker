@@ -3,8 +3,10 @@
 // Main detection logic combining all analysis modules.
 // Produces comprehensive quality reports with confidence scores.
 //
-// CORRECTED v2: Fixed false positives on high sample rate files (88.2kHz+)
-// by using absolute frequency thresholds instead of ratio-based detection.
+// CORRECTED v3: Fixed false positives on:
+// - High sample rate files (88.2kHz+) using absolute frequency thresholds
+// - Clean original files being flagged with SpectralArtifacts
+// - Downsampled files being incorrectly flagged
 
 use anyhow::Result;
 use crate::decoder::AudioData;
@@ -180,7 +182,7 @@ pub fn detect_quality_issues(
     let mut spectral_analyzer = SpectralAnalyzer::new(8192, 2048, audio.sample_rate);
     let spectral_analysis = spectral_analyzer.analyze(audio)?;
     
-    // Detect transcodes from spectral signature (CORRECTED v2)
+    // Detect transcodes from spectral signature (CORRECTED v3)
     detect_transcode_from_spectral(&spectral_analysis, audio, &mut defects);
     
     // ===== Bit Depth Analysis =====
@@ -333,14 +335,28 @@ pub fn detect_quality_issues(
     }
     
     // ===== Spectral Artifacts =====
-    if spectral_analysis.has_artifacts {
-        defects.push(DetectedDefect {
-            defect_type: DefectType::SpectralArtifacts {
-                artifact_score: spectral_analysis.artifact_score,
-            },
-            confidence: 0.7,
-            evidence: vec![format!("Artifact score: {:.2}", spectral_analysis.artifact_score)],
-        });
+    // CORRECTED v3: Only report spectral artifacts if score is HIGH and
+    // we have corroborating evidence (like a detected transcode)
+    // This prevents false positives on clean files with natural spectral characteristics
+    if spectral_analysis.has_artifacts && spectral_analysis.artifact_score > 1.0 {
+        // Only add spectral artifacts if we already detected a transcode
+        // OR if the score is extremely high (>2.0)
+        let has_transcode_defect = defects.iter().any(|d| matches!(d.defect_type,
+            DefectType::Mp3Transcode { .. } |
+            DefectType::AacTranscode { .. } |
+            DefectType::OggVorbisTranscode { .. } |
+            DefectType::OpusTranscode { .. }
+        ));
+        
+        if has_transcode_defect || spectral_analysis.artifact_score > 2.0 {
+            defects.push(DetectedDefect {
+                defect_type: DefectType::SpectralArtifacts {
+                    artifact_score: spectral_analysis.artifact_score,
+                },
+                confidence: 0.7,
+                evidence: vec![format!("Artifact score: {:.2}", spectral_analysis.artifact_score)],
+            });
+        }
     }
     
     // ===== Calculate Overall Quality Score =====
@@ -399,16 +415,24 @@ pub fn detect_quality_issues(
 }
 
 // =============================================================================
-// CORRECTED v2: Transcode detection with proper high sample rate handling
+// CORRECTED v3: Transcode detection with proper high sample rate handling
+// and reduced false positives on clean files
 // =============================================================================
 
-/// Detect transcodes from spectral analysis - CORRECTED VERSION
+/// Detect transcodes from spectral analysis - CORRECTED VERSION v3
 /// 
 /// KEY INSIGHT: For high sample rate files (88.2kHz+), we must use ABSOLUTE
 /// frequency thresholds, not ratio-based detection. Music content naturally
 /// stops around 20kHz (human hearing limit), so a 96kHz file with content
 /// to 20kHz has only a 42% cutoff ratio - which would trigger false positives
 /// with the old 85% threshold.
+///
+/// ADDITIONAL FIX v3: Require stronger evidence before flagging ANY file.
+/// Natural musical content can have varying high-frequency content based on:
+/// - Recording equipment and microphone characteristics
+/// - Mastering decisions
+/// - Genre (classical/jazz vs electronic)
+/// - Era of recording
 fn detect_transcode_from_spectral(
     spectral: &SpectralAnalysis,
     audio: &AudioData,
@@ -482,12 +506,13 @@ fn detect_transcode_from_spectral(
         // Content to 18kHz = 82% ratio - could be MP3 320k or mastering
         // Content to 16kHz = 73% ratio - likely lossy transcode
         
-        if cutoff_ratio >= 0.80 {
+        // CORRECTED v3: Raise threshold to 75% to reduce false positives
+        if cutoff_ratio >= 0.75 {
             return;  // Normal for standard sample rate
         }
         
-        // 70-80% range: need evidence
-        if cutoff_ratio >= 0.70 {
+        // 65-75% range: need evidence
+        if cutoff_ratio >= 0.65 {
             if !spectral.has_brick_wall && spectral.rolloff_steepness < 40.0 {
                 return;  // Probably natural rolloff
             }
@@ -511,9 +536,9 @@ fn detect_transcode_from_spectral(
         }
     } else {
         // For standard sample rate: ratio-based confidence
-        if cutoff_ratio < 0.60 {
+        if cutoff_ratio < 0.55 {
             0.90
-        } else if cutoff_ratio < 0.70 {
+        } else if cutoff_ratio < 0.65 {
             0.75
         } else {
             0.55
@@ -528,18 +553,18 @@ fn detect_transcode_from_spectral(
     
     let confidence = (base_confidence + evidence_boost).min(0.95);
     
-    // Confidence floor - raised from 0.4 to 0.55
-    if confidence < 0.55 {
+    // Confidence floor - raised from 0.55 to 0.60 in v3
+    if confidence < 0.60 {
         return;
     }
     
     // =========================================================================
-    // CODEC CLASSIFICATION (v2 - no default fallback)
+    // CODEC CLASSIFICATION (v3 - no default fallback, stricter matching)
     // =========================================================================
     
     let cutoff_hz_u32 = cutoff_hz as u32;
     
-    let defect_type = match classify_codec_type_v2(spectral, cutoff_hz_u32) {
+    let defect_type = match classify_codec_type_v3(spectral, cutoff_hz_u32) {
         Some(dt) => dt,
         None => return,  // Can't identify codec - DON'T FLAG
     };
@@ -616,8 +641,8 @@ fn has_codec_signature(spectral: &SpectralAnalysis, cutoff_hz: f32) -> bool {
     false
 }
 
-/// Classify codec type - version 2 with better discrimination and NO DEFAULT FALLBACK
-fn classify_codec_type_v2(
+/// Classify codec type - version 3 with stricter matching and NO DEFAULT FALLBACK
+fn classify_codec_type_v3(
     spectral: &SpectralAnalysis,
     cutoff_hz: u32,
 ) -> Option<DefectType> {
@@ -626,6 +651,7 @@ fn classify_codec_type_v2(
     // MP3 Detection
     // Strong indicators: Brick-wall + very steep rolloff (>50 dB/oct)
     // Typical cutoffs: 15.5-20.5 kHz depending on bitrate
+    // CORRECTED v3: Require BOTH brick-wall AND steep rolloff for higher cutoffs
     // =========================================================================
     if spectral.has_brick_wall && spectral.rolloff_steepness > 50.0 {
         if cutoff_hz >= 15000 && cutoff_hz <= 20500 {
@@ -638,7 +664,8 @@ fn classify_codec_type_v2(
     }
     
     // MP3 with slightly softer evidence (very steep rolloff alone)
-    if spectral.rolloff_steepness > 70.0 && cutoff_hz >= 15000 && cutoff_hz <= 20500 {
+    // CORRECTED v3: Only for lower bitrates (cutoff < 18kHz)
+    if spectral.rolloff_steepness > 70.0 && cutoff_hz >= 15000 && cutoff_hz < 18000 {
         let bitrate = estimate_mp3_bitrate(cutoff_hz);
         return Some(DefectType::Mp3Transcode { 
             cutoff_hz, 
@@ -678,21 +705,13 @@ fn classify_codec_type_v2(
             });
         }
         // Fullband mode - harder to distinguish from MP3 320k
-        if cutoff_hz >= 19500 && cutoff_hz <= 20500 {
-            // Opus fullband typically has less steep rolloff than MP3
-            if spectral.rolloff_steepness < 60.0 {
-                return Some(DefectType::OpusTranscode { 
-                    cutoff_hz, 
-                    mode: "Fullband (20kHz)".to_string(),
-                });
-            }
-        }
+        // CORRECTED v3: Don't flag fullband Opus as it's very close to lossless quality
     }
     
     // =========================================================================
     // Vorbis Detection
     // ONLY flag if we have positive Vorbis-specific evidence
-    // NO MORE DEFAULT FALLBACK!
+    // NO DEFAULT FALLBACK!
     // =========================================================================
     // Vorbis characteristics:
     // - Softer rolloff than MP3 (typically 20-40 dB/oct)
@@ -700,25 +719,23 @@ fn classify_codec_type_v2(
     // - Quality-dependent cutoff (Q3 ~14kHz, Q6 ~19kHz, Q10 ~22kHz)
     
     if !spectral.has_brick_wall 
-        && spectral.rolloff_steepness >= 15.0 
+        && spectral.rolloff_steepness >= 20.0  // Raised from 15 to 20
         && spectral.rolloff_steepness <= 45.0 
         && cutoff_hz >= 12000 
-        && cutoff_hz <= 19000 
+        && cutoff_hz <= 18000  // Lowered from 19000 to reduce false positives
     {
         // Estimate quality from cutoff
         let estimated_quality = if cutoff_hz < 14000 {
             Some(3)
         } else if cutoff_hz < 16000 {
             Some(5)
-        } else if cutoff_hz < 18000 {
-            Some(6)
         } else {
-            Some(7)
+            Some(6)
         };
         
         // Only confident about lower quality settings
         if let Some(q) = estimated_quality {
-            if q <= 6 {
+            if q <= 5 {  // Reduced from 6 to 5 for stricter detection
                 return Some(DefectType::OggVorbisTranscode {
                     cutoff_hz,
                     estimated_quality,
