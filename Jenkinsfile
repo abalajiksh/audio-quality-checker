@@ -28,6 +28,7 @@ pipeline {
     environment {
         RUST_BACKTRACE = '1'
         CARGO_TERM_COLOR = 'never'
+        PATH = "$HOME/bin:$HOME/.cargo/bin:/usr/bin:$PATH"
     }
 
     stages {
@@ -74,12 +75,24 @@ pipeline {
                 stage('Setup Tools') {
                     steps {
                         sh '''
-                            mkdir -p /var/lib/jenkins/bin
+                            mkdir -p $HOME/bin
                             
-                            # Verify required tools
-                            command -v cc || { echo "ERROR: cc not found"; exit 1; }
-                            command -v mc || { echo "ERROR: mc (minio client) not found"; exit 1; }
-                            command -v cargo || { echo "ERROR: cargo not found"; exit 1; }
+                            if ! command -v cc >/dev/null 2>&1; then
+                                echo "ERROR: C compiler not found!"
+                                exit 1
+                            fi
+                            
+                            if ! command -v mc >/dev/null 2>&1; then
+                                echo "Installing MinIO client..."
+                                wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O $HOME/bin/mc
+                                chmod +x $HOME/bin/mc
+                            fi
+                            
+                            if ! command -v cargo >/dev/null 2>&1; then
+                                echo "Installing Rust..."
+                                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+                                . $HOME/.cargo/env
+                            fi
                             
                             echo "=== Tool Versions ==="
                             mc --version
