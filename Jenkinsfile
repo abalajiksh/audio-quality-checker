@@ -6,6 +6,13 @@ pipeline {
         CARGO_HOME = "${WORKSPACE}/.cargo"
         PATH = "${WORKSPACE}/.cargo/bin:${env.PATH}:/var/lib/jenkins/bin:/var/lib/jenkins/.cargo/bin:$HOME/bin"
         RUSTUP_HOME = '/var/lib/jenkins/.rustup'
+        
+        // MinIO configuration
+        MINIO_BUCKET = 'audiocheckr-test-files'
+        MINIO_FILE_COMPACT = 'CompactTestFiles.zip'
+        MINIO_FILE_FULL = 'TestFiles.zip'
+        MINIO_FILE_GENRE_LITE = 'GenreTestSuiteLite.zip'
+        MINIO_FILE_GENRE_FULL = 'TestSuite.zip'
     }
 
     parameters {
@@ -149,88 +156,86 @@ pipeline {
                     steps {
                         script {
                             withCredentials([
-                                string(credentialsId: 'minio-endpoint', variable: 'MINIO_ENDPOINT'),
-                                string(credentialsId: 'minio-secret-key', variable: 'MINIO_SECRET_KEY')
+                                usernamePassword(
+                                    credentialsId: 'noIdea',
+                                    usernameVariable: 'MINIO_ACCESS_KEY',
+                                    passwordVariable: 'MINIO_SECRET_KEY'
+                                ),
+                                string(
+                                    credentialsId: 'minio-endpoint',
+                                    variable: 'MINIO_ENDPOINT'
+                                )
                             ]) {
-                                sh '''
-                                    set -e
-                                    
-                                    # Configure MinIO client
-                                    mc alias set myminio "${MINIO_ENDPOINT}" minioadmin "${MINIO_SECRET_KEY}" --api S3v4 2>/dev/null || true
-                                    
-                                    case "${TEST_TYPE}" in
-                                        QUALIFICATION)
-                                            echo "📦 Downloading TestFiles.zip and GenreTestSuiteLite.zip for QUALIFICATION tests..."
-                                            
-                                            # Download TestFiles for qualification_test
-                                            if [ ! -d "TestFiles" ]; then
-                                                mc cp myminio/audiocheckr-test-files/TestFiles.zip . 2>/dev/null || {
-                                                    echo "ERROR: Failed to download TestFiles.zip"
-                                                    exit 1
-                                                }
-                                                unzip -q TestFiles.zip
-                                                rm -f TestFiles.zip
-                                            fi
-                                            
-                                            # Download GenreTestSuiteLite for qualification_genre_test
-                                            if [ ! -d "GenreTestSuiteLite" ]; then
-                                                mc cp myminio/audiocheckr-test-files/GenreTestSuiteLite.zip . 2>/dev/null || {
-                                                    echo "WARNING: GenreTestSuiteLite.zip not found, will try TestSuite as fallback"
-                                                }
-                                                if [ -f "GenreTestSuiteLite.zip" ]; then
-                                                    unzip -q GenreTestSuiteLite.zip
-                                                    rm -f GenreTestSuiteLite.zip
-                                                fi
-                                            fi
-                                            
-                                            echo "✓ Test files ready"
-                                            ls -la
-                                            ;;
-                                            
-                                        REGRESSION)
-                                            echo "📦 Downloading TestFiles.zip and TestSuite.zip for REGRESSION tests..."
-                                            
-                                            # Download TestFiles for regression_test
-                                            if [ ! -d "TestFiles" ]; then
-                                                mc cp myminio/audiocheckr-test-files/TestFiles.zip . 2>/dev/null || {
-                                                    echo "ERROR: Failed to download TestFiles.zip"
-                                                    exit 1
-                                                }
-                                                unzip -q TestFiles.zip
-                                                rm -f TestFiles.zip
-                                            fi
-                                            
-                                            # Download full TestSuite for regression_genre_test
-                                            if [ ! -d "TestSuite" ]; then
-                                                mc cp myminio/audiocheckr-test-files/TestSuite.zip . 2>/dev/null || {
-                                                    echo "ERROR: Failed to download TestSuite.zip"
-                                                    exit 1
-                                                }
-                                                unzip -q TestSuite.zip
-                                                rm -f TestSuite.zip
-                                            fi
-                                            
-                                            echo "✓ Test files ready"
-                                            ls -la
-                                            ;;
-                                            
-                                        DIAGNOSTIC)
-                                            echo "📦 Downloading TestSuite.zip for DIAGNOSTIC tests..."
-                                            
-                                            if [ ! -d "TestSuite" ]; then
-                                                mc cp myminio/audiocheckr-test-files/TestSuite.zip . 2>/dev/null || {
-                                                    echo "ERROR: Failed to download TestSuite.zip"
-                                                    exit 1
-                                                }
-                                                unzip -q TestSuite.zip
-                                                rm -f TestSuite.zip
-                                            fi
-                                            
-                                            echo "✓ Test files ready"
-                                            ls -la
-                                            ;;
-                                    esac
-                                '''
+                                if (env.TEST_TYPE == 'DIAGNOSTIC') {
+                                    sh '''
+                                        set -e
+                                        mc alias set myminio "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+                                        
+                                        echo "=========================================="
+                                        echo "Downloading DIAGNOSTIC test files"
+                                        echo "=========================================="
+                                        
+                                        # Download and extract TestSuite only
+                                        echo "Downloading ${MINIO_FILE_GENRE_FULL}"
+                                        mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE_GENRE_FULL} .
+                                        unzip -q -o ${MINIO_FILE_GENRE_FULL}
+                                        rm -f ${MINIO_FILE_GENRE_FULL}
+                                        
+                                        echo "✓ Test files ready for diagnostic"
+                                        ls -la
+                                    '''
+                                } else if (env.TEST_TYPE == 'REGRESSION') {
+                                    sh '''
+                                        set -e
+                                        mc alias set myminio "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+                                        
+                                        echo "=========================================="
+                                        echo "Downloading REGRESSION test files"
+                                        echo "=========================================="
+                                        
+                                        # Download and extract TestFiles
+                                        echo "Downloading ${MINIO_FILE_FULL}"
+                                        mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE_FULL} .
+                                        unzip -q -o ${MINIO_FILE_FULL}
+                                        rm -f ${MINIO_FILE_FULL}
+                                        
+                                        # Download and extract TestSuite
+                                        echo "Downloading ${MINIO_FILE_GENRE_FULL}"
+                                        mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE_GENRE_FULL} .
+                                        unzip -q -o ${MINIO_FILE_GENRE_FULL}
+                                        rm -f ${MINIO_FILE_GENRE_FULL}
+                                        
+                                        echo "✓ Test files ready"
+                                        ls -la
+                                    '''
+                                } else {
+                                    sh '''
+                                        set -e
+                                        mc alias set myminio "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+                                        
+                                        echo "=========================================="
+                                        echo "Downloading QUALIFICATION test files"
+                                        echo "=========================================="
+                                        
+                                        # Download and extract CompactTestFiles
+                                        echo "Downloading ${MINIO_FILE_COMPACT}"
+                                        mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE_COMPACT} .
+                                        unzip -q -o ${MINIO_FILE_COMPACT}
+                                        if [ -d "CompactTestFiles" ]; then
+                                            mv CompactTestFiles TestFiles
+                                        fi
+                                        rm -f ${MINIO_FILE_COMPACT}
+                                        
+                                        # Download and extract GenreTestSuiteLite
+                                        echo "Downloading ${MINIO_FILE_GENRE_LITE}"
+                                        mc cp myminio/${MINIO_BUCKET}/${MINIO_FILE_GENRE_LITE} .
+                                        unzip -q -o ${MINIO_FILE_GENRE_LITE}
+                                        rm -f ${MINIO_FILE_GENRE_LITE}
+                                        
+                                        echo "✓ Test files ready"
+                                        ls -la
+                                    '''
+                                }
                             }
                         }
                     }
