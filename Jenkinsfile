@@ -8,7 +8,7 @@ pipeline {
         RUSTUP_HOME = '/var/lib/jenkins/.rustup'
         
         // MinIO configuration
-        MINIO_BUCKET = 'audiocheckr-test-files'
+        MINIO_BUCKET = 'audiocheckr'
         MINIO_FILE_COMPACT = 'CompactTestFiles.zip'
         MINIO_FILE_FULL = 'TestFiles.zip'
         MINIO_FILE_GENRE_LITE = 'GenreTestSuiteLite.zip'
