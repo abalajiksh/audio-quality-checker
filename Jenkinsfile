@@ -13,9 +13,6 @@ pipeline {
         MINIO_FILE_FULL = 'TestFiles.zip'
         MINIO_FILE_GENRE_LITE = 'GenreTestSuiteLite.zip'
         MINIO_FILE_GENRE_FULL = 'TestSuite.zip'
-        
-        // Use explicit path for MinIO client to avoid conflict with Midnight Commander
-        MINIO_MC = "${HOME}/bin/minio-mc"
     }
 
     parameters {
@@ -181,13 +178,13 @@ pipeline {
                                     variable: 'MINIO_ENDPOINT'
                                 )
                             ]) {
-                                // Use the explicit MinIO client path
-                                def mcCmd = '$HOME/bin/minio-mc'
-                                
                                 if (env.TEST_TYPE == 'DIAGNOSTIC') {
-                                    sh """
+                                    sh '''
                                         set -e
-                                        ${mcCmd} alias set myminio "\$MINIO_ENDPOINT" "\$MINIO_ACCESS_KEY" "\$MINIO_SECRET_KEY"
+                                        MC="$HOME/bin/minio-mc"
+                                        
+                                        echo "Setting up MinIO alias..."
+                                        $MC alias set myminio "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
                                         
                                         echo "=========================================="
                                         echo "Downloading DIAGNOSTIC test files"
@@ -195,17 +192,20 @@ pipeline {
                                         
                                         # Download and extract TestSuite only
                                         echo "Downloading ${MINIO_FILE_GENRE_FULL}"
-                                        ${mcCmd} cp myminio/${MINIO_BUCKET}/${MINIO_FILE_GENRE_FULL} .
+                                        $MC cp myminio/${MINIO_BUCKET}/${MINIO_FILE_GENRE_FULL} .
                                         unzip -q -o ${MINIO_FILE_GENRE_FULL}
                                         rm -f ${MINIO_FILE_GENRE_FULL}
                                         
                                         echo "✓ Test files ready for diagnostic"
                                         ls -la
-                                    """
+                                    '''
                                 } else if (env.TEST_TYPE == 'REGRESSION') {
-                                    sh """
+                                    sh '''
                                         set -e
-                                        ${mcCmd} alias set myminio "\$MINIO_ENDPOINT" "\$MINIO_ACCESS_KEY" "\$MINIO_SECRET_KEY"
+                                        MC="$HOME/bin/minio-mc"
+                                        
+                                        echo "Setting up MinIO alias..."
+                                        $MC alias set myminio "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
                                         
                                         echo "=========================================="
                                         echo "Downloading REGRESSION test files"
@@ -213,23 +213,26 @@ pipeline {
                                         
                                         # Download and extract TestFiles
                                         echo "Downloading ${MINIO_FILE_FULL}"
-                                        ${mcCmd} cp myminio/${MINIO_BUCKET}/${MINIO_FILE_FULL} .
+                                        $MC cp myminio/${MINIO_BUCKET}/${MINIO_FILE_FULL} .
                                         unzip -q -o ${MINIO_FILE_FULL}
                                         rm -f ${MINIO_FILE_FULL}
                                         
                                         # Download and extract TestSuite
                                         echo "Downloading ${MINIO_FILE_GENRE_FULL}"
-                                        ${mcCmd} cp myminio/${MINIO_BUCKET}/${MINIO_FILE_GENRE_FULL} .
+                                        $MC cp myminio/${MINIO_BUCKET}/${MINIO_FILE_GENRE_FULL} .
                                         unzip -q -o ${MINIO_FILE_GENRE_FULL}
                                         rm -f ${MINIO_FILE_GENRE_FULL}
                                         
                                         echo "✓ Test files ready"
                                         ls -la
-                                    """
+                                    '''
                                 } else {
-                                    sh """
+                                    sh '''
                                         set -e
-                                        ${mcCmd} alias set myminio "\$MINIO_ENDPOINT" "\$MINIO_ACCESS_KEY" "\$MINIO_SECRET_KEY"
+                                        MC="$HOME/bin/minio-mc"
+                                        
+                                        echo "Setting up MinIO alias..."
+                                        $MC alias set myminio "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
                                         
                                         echo "=========================================="
                                         echo "Downloading QUALIFICATION test files"
@@ -237,7 +240,7 @@ pipeline {
                                         
                                         # Download and extract CompactTestFiles
                                         echo "Downloading ${MINIO_FILE_COMPACT}"
-                                        ${mcCmd} cp myminio/${MINIO_BUCKET}/${MINIO_FILE_COMPACT} .
+                                        $MC cp myminio/${MINIO_BUCKET}/${MINIO_FILE_COMPACT} .
                                         unzip -q -o ${MINIO_FILE_COMPACT}
                                         if [ -d "CompactTestFiles" ]; then
                                             mv CompactTestFiles TestFiles
@@ -246,13 +249,13 @@ pipeline {
                                         
                                         # Download and extract GenreTestSuiteLite
                                         echo "Downloading ${MINIO_FILE_GENRE_LITE}"
-                                        ${mcCmd} cp myminio/${MINIO_BUCKET}/${MINIO_FILE_GENRE_LITE} .
+                                        $MC cp myminio/${MINIO_BUCKET}/${MINIO_FILE_GENRE_LITE} .
                                         unzip -q -o ${MINIO_FILE_GENRE_LITE}
                                         rm -f ${MINIO_FILE_GENRE_LITE}
                                         
                                         echo "✓ Test files ready"
                                         ls -la
-                                    """
+                                    '''
                                 }
                             }
                         }
