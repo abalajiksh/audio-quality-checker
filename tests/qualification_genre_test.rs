@@ -66,7 +66,7 @@ fn test_qualification_genre_suite() {
 
     if total_tests == 0 {
         println!("WARNING: No test files found in {}", test_base.display());
-        println!("Expected FLAC files in category subdirectories.");
+        println!("Expected FLAC files in category subdirectories or flat structure.");
         return;
     }
 
@@ -153,7 +153,7 @@ fn test_qualification_genre_suite() {
 fn scan_and_build_test_cases(base: &Path) -> Vec<GenreTestCase> {
     let mut cases = Vec::new();
 
-    // Read all subdirectories
+    // Read entries in the base directory
     let entries = match fs::read_dir(base) {
         Ok(entries) => entries,
         Err(e) => {
@@ -169,35 +169,69 @@ fn scan_and_build_test_cases(base: &Path) -> Vec<GenreTestCase> {
         };
 
         let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
+        
+        // Check if it's a directory (subdirectory structure)
+        if path.is_dir() {
+            let category = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
 
-        let category = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name.to_string(),
-            None => continue,
-        };
-
-        // Scan FLAC files in this category
-        let files = match fs::read_dir(&path) {
-            Ok(files) => files,
-            Err(_) => continue,
-        };
-
-        for file_entry in files {
-            let file_entry = match file_entry {
-                Ok(f) => f,
+            // Scan FLAC files in this category subdirectory
+            let files = match fs::read_dir(&path) {
+                Ok(files) => files,
                 Err(_) => continue,
             };
 
-            let file_path = file_entry.path();
-            if file_path.extension().and_then(|e| e.to_str()) != Some("flac") {
-                continue;
-            }
+            for file_entry in files {
+                let file_entry = match file_entry {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
 
-            let filename = match file_path.file_name().and_then(|n| n.to_str()) {
+                let file_path = file_entry.path();
+                if file_path.extension().and_then(|e| e.to_str()) != Some("flac") {
+                    continue;
+                }
+
+                let filename = match file_path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name.to_string(),
+                    None => continue,
+                };
+
+                // Determine expected result based on category
+                let (should_pass, expected_defects) = categorize_expected_result(&category);
+                let genre_info = extract_genre_from_filename(&filename);
+
+                cases.push(GenreTestCase {
+                    file_path: file_path.to_string_lossy().to_string(),
+                    should_pass,
+                    expected_defects,
+                    description: filename.clone(),
+                    genre: genre_info,
+                    defect_category: category.clone(),
+                });
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("flac") {
+            // Handle flat file structure - extract category from filename prefix
+            let filename = match path.file_name().and_then(|n| n.to_str()) {
                 Some(name) => name.to_string(),
                 None => continue,
+            };
+
+            // Extract category from filename pattern: "CategoryName__description.flac"
+            // Examples:
+            //   "AAC_128_Low__Different_Masks__24sample_aac_128k.flac" -> "AAC_128_Low"
+            //   "BitDepth_16to24__Boogieman_24sample_16to24_upscaled.flac" -> "BitDepth_16to24"
+            let category = if let Some(pos) = filename.find("__") {
+                filename[..pos].to_string()
+            } else {
+                // If no "__" delimiter, try to extract from first underscore pattern
+                filename
+                    .split('_')
+                    .take(3) // Take first 3 parts (e.g., "AAC", "128", "Low")
+                    .collect::<Vec<_>>()
+                    .join("_")
             };
 
             // Determine expected result based on category
@@ -205,7 +239,7 @@ fn scan_and_build_test_cases(base: &Path) -> Vec<GenreTestCase> {
             let genre_info = extract_genre_from_filename(&filename);
 
             cases.push(GenreTestCase {
-                file_path: file_path.to_string_lossy().to_string(),
+                file_path: path.to_string_lossy().to_string(),
                 should_pass,
                 expected_defects,
                 description: filename.clone(),
