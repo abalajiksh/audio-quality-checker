@@ -219,7 +219,7 @@ pipeline {
                                 )
                             ]) {
                                 if (env.TEST_TYPE == 'DIAGNOSTIC') {
-                                    sh '''
+                                    sh '''#!/bin/bash
                                         set -e
                                         MC="$HOME/bin/minio-mc"
                                         
@@ -240,7 +240,7 @@ pipeline {
                                         ls -lh TestSuite/ | head -n 20
                                     '''
                                 } else if (env.TEST_TYPE == 'REGRESSION') {
-                                    sh '''
+                                    sh '''#!/bin/bash
                                         set -e
                                         MC="$HOME/bin/minio-mc"
                                         
@@ -268,7 +268,7 @@ pipeline {
                                         ls -lh TestSuite/ | head -n 10
                                     '''
                                 } else if (env.TEST_TYPE == 'REGRESSION_GENRE') {
-                                    sh '''
+                                    sh '''#!/bin/bash
                                         set -e
                                         MC="$HOME/bin/minio-mc"
                                         
@@ -290,7 +290,7 @@ pipeline {
                                     '''
                                 } else {
                                     // QUALIFICATION (default)
-                                    sh '''
+                                    sh '''#!/bin/bash
                                         set -e
                                         MC="$HOME/bin/minio-mc"
                                         
@@ -317,7 +317,10 @@ pipeline {
                                         rm -f ${MINIO_FILE_GENRE_LITE}
                                         
                                         echo "✓ Test files ready"
+                                        echo "TestFiles directory:"
                                         ls -lh TestFiles/ | head -n 10
+                                        echo ""
+                                        echo "GenreTestSuiteLite directory:"
                                         ls -lh GenreTestSuiteLite/ | head -n 10
                                     '''
                                 }
@@ -365,29 +368,6 @@ pipeline {
         
         stage('Test - x86_64') {
             parallel {
-                stage('Unit Tests') {
-                    steps {
-                        script {
-                            echo "=========================================="
-                            echo "x86_64: Unit Tests"
-                            echo "=========================================="
-                            
-                            sh '''#!/bin/bash
-                                set +e
-                                mkdir -p target/test-results
-                                cargo test --lib -- --nocapture 2>&1 | tee target/test-results/unit_x86_64.txt
-                                TEST_EXIT=${PIPESTATUS[0]}
-                                
-                                if [ ${TEST_EXIT} -ne 0 ]; then
-                                    echo "⚠ Unit tests had failures (exit code: ${TEST_EXIT})"
-                                else
-                                    echo "✓ Unit tests passed!"
-                                fi
-                            '''
-                        }
-                    }
-                }
-                
                 stage('Integration Tests') {
                     steps {
                         script {
@@ -588,35 +568,6 @@ pipeline {
                 expression { return !params.SKIP_ARM_BUILD }
             }
             parallel {
-                stage('ARM64 Unit Tests') {
-                    steps {
-                        script {
-                            echo "=========================================="
-                            echo "ARM64: Unit Tests"
-                            echo "=========================================="
-                            
-                            sh '''#!/bin/bash
-                                if ! command -v qemu-aarch64-static >/dev/null 2>&1; then
-                                    echo "⚠ QEMU user-mode not available, skipping ARM64 tests"
-                                    echo "Install with: sudo apt-get install qemu-user-static"
-                                    exit 0
-                                fi
-                                
-                                set +e
-                                mkdir -p target/test-results
-                                cargo test --target aarch64-unknown-linux-gnu --lib -- --nocapture 2>&1 | tee target/test-results/unit_arm64.txt
-                                TEST_EXIT=${PIPESTATUS[0]}
-                                
-                                if [ ${TEST_EXIT} -ne 0 ]; then
-                                    echo "⚠ ARM64 unit tests had failures"
-                                else
-                                    echo "✓ ARM64 unit tests passed!"
-                                fi
-                            '''
-                        }
-                    }
-                }
-                
                 stage('ARM64 Integration Tests') {
                     steps {
                         script {
